@@ -25,9 +25,15 @@ def init_thread_tables(conn):
             first_contact TEXT,
             last_contact TEXT,
             email_count INTEGER DEFAULT 0,
-            is_internal INTEGER DEFAULT 0
+            is_internal INTEGER DEFAULT 0,
+            contact_type TEXT DEFAULT 'customer'
         )
     ''')
+    # 兼容旧表：如果 contact_type 列不存在则添加
+    try:
+        cursor.execute('ALTER TABLE customers ADD COLUMN contact_type TEXT DEFAULT "customer"')
+    except Exception:
+        pass
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS threads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +113,158 @@ def identify_internal_emails(conn, company_domains=None):
     return company_domains
 
 
+def classify_contact(email_addr, from_name, domain):
+    """基于规则的联系人分类引擎 —— 不用AI，纯规则判断"""
+    email_lower = email_addr.lower()
+    name_lower = (from_name or '').lower()
+    domain_lower = domain.lower()
+    local_part = email_lower.split('@')[0] if '@' in email_lower else ''
+
+    # ========== 1. 系统/自动邮件（最先判断）==========
+    system_local_parts = [
+        'noreply', 'no-reply', 'donotreply', 'do-not-reply', 'do_not_reply',
+        'mailer-daemon', 'postmaster', 'bounce', 'auto', 'automail',
+        'system', 'admin', 'webmaster', 'root', 'daemon',
+        'notification', 'notifications', 'notify', 'alert', 'alerts',
+        'newsletter', 'news', 'digest', 'update', 'updates',
+        'support', 'help', 'feedback', 'survey',
+    ]
+    if local_part in system_local_parts:
+        return 'platform'
+
+    # ========== 2. B2B平台/电商平台 ==========
+    platform_domains = [
+        # 阿里系
+        'alibaba.com', 'aliexpress.com', 'aliyun.com', '1688.com',
+        'service.alibaba.com', 'email.alibaba.com', 'notice.alibaba.com',
+        'alerts.globalsources.com',
+        # 国际B2B
+        'globalsources.com', 'made-in-china.com', 'dhgate.com', 'tradesparq.com',
+        # 电商
+        'amazon.com', 'ebay.com', 'shopee.com', 'lazada.com', 'jumia.com',
+        'wish.com', 'temu.com',
+        # 邮件营销/CRM工具
+        'xiaomanmail.com', 'xiaoman.cn', 'mailchimp.com', 'sendgrid.net',
+        'constantcontact.com', 'hubspot.com', 'zoho.com',
+        'marketgate.com', 'ecrm.marketgate.com',
+        # 文件传输
+        'wetransfer.com', 'dropbox.com',
+        # 社交
+        'linkedin.com', 'facebook.com', 'twitter.com',
+    ]
+    for pd in platform_domains:
+        if domain_lower == pd or domain_lower.endswith('.' + pd):
+            return 'platform'
+
+    # 平台关键词（在域名中）
+    platform_kw = ['alibaba', 'aliexpress', 'globalsource', 'xiaoman']
+    for kw in platform_kw:
+        if kw in domain_lower:
+            return 'platform'
+
+    # ========== 3. 货代/物流/船公司 ==========
+    logistics_domains = [
+        # 国际快递
+        'ups.com', 'fedex.com', 'dhl.com', 'dhl.de', 'tnt.com', 'aramex.com',
+        'dpd.com', 'gls-group.com',
+        # 船公司
+        'maersk.com', 'msc.com', 'cma-cgm.com', 'cosco.com', 'oocl.com',
+        'evergreen-line.com', 'hapag-lloyd.com', 'yangming.com', 'zim.com',
+        'oneline.com', 'hmm21.com', 'pilship.com',
+        # 货代
+        'kuehne-nagel.com', 'dbschenker.com', 'expeditors.com',
+        'tollgroup.com', 'bollore.com', 'geodis.com', 'ceva-logistics.com',
+        'sparxlogistics.com',
+    ]
+    for ld in logistics_domains:
+        if domain_lower == ld or domain_lower.endswith('.' + ld):
+            return 'logistics'
+
+    logistics_kw = [
+        'shipping', 'freight', 'logistics', 'cargo', 'forwarder', 'forwarding',
+        'transport', 'express', 'courier', 'customs', 'clearance',
+        'warehouse', 'trucking', 'haulage',
+    ]
+    for kw in logistics_kw:
+        if kw in domain_lower:
+            return 'logistics'
+
+    # ========== 4. 验厂/检测/认证机构 ==========
+    inspection_domains = [
+        'bureauveritas.com', 'sgs.com', 'intertek.com', 'tuv.com',
+        'ul.com', 'eurofins.com', 'cotecna.com', 'gl-insp.com',
+        'bsigroup.com', 'dekra.com', 'dnv.com',
+    ]
+    for iid in inspection_domains:
+        if domain_lower == iid or domain_lower.endswith('.' + iid):
+            return 'inspection'
+
+    inspection_kw = ['inspection', 'audit', 'certification', 'testing', 'laboratory']
+    for kw in inspection_kw:
+        if kw in domain_lower:
+            return 'inspection'
+
+    # ========== 5. 广告/展会/媒体 ==========
+    ad_domains = [
+        'ubm.com', 'informa.com', 'reedexpo.com', 'messefrankfurt.com',
+        'koelnmesse.com', 'nurnbergmesse.de',
+    ]
+    for ad in ad_domains:
+        if domain_lower == ad or domain_lower.endswith('.' + ad):
+            return 'advertisement'
+
+    ad_kw = [
+        'exhibition', 'expo', 'fair', 'trade-show', 'tradeshow',
+        'advert', 'promo', 'campaign', 'subscribe', 'unsubscribe',
+        'media', 'press', 'editorial', 'magazine',
+    ]
+    for kw in ad_kw:
+        if kw in domain_lower or kw in local_part:
+            return 'advertisement'
+
+    # ========== 6. 银行/金融/保险 ==========
+    finance_kw = [
+        'bank', 'hsbc', 'citibank', 'chase', 'barclays',
+        'insurance', 'paypal', 'visa', 'mastercard',
+        'pingan', 'icbc', 'boc.cn',
+    ]
+    for kw in finance_kw:
+        if kw in domain_lower:
+            return 'finance'
+
+    # ========== 7. 政府/海关/商会 ==========
+    gov_kw = [
+        '.gov', 'customs', 'chamber', 'commerce', 'council',
+        'ccpit', 'mofcom', 'ciqa', 'aqsiq',
+    ]
+    for kw in gov_kw:
+        if kw in domain_lower:
+            return 'government'
+
+    # ========== 8. 免费邮箱（可能是客户，也可能是个人） ==========
+    free_email_domains = [
+        'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com',
+        'aol.com', 'icloud.com', 'msn.com', 'mail.com', 'yandex.com',
+        'hotmail.co.uk', 'yahoo.co.uk', 'yahoo.fr', 'hotmail.fr',
+        'qq.com', '163.com', '126.com', 'sina.com', 'foxmail.com',
+        'rogers.com', 'comcast.net', 'att.net', 'verizon.net',
+    ]
+    if domain_lower in free_email_domains:
+        # 免费邮箱不一定是客户，标记为 potential_customer
+        # 但如果有名字且不像自动邮件，还是算客户
+        return 'customer'
+
+    # ========== 9. 中国供应商/工厂（.cn / .com.cn 域名） ==========
+    if domain_lower.endswith('.cn') or domain_lower.endswith('.com.cn'):
+        # 排除 qiye.163.com 等邮箱服务商
+        if 'qiye.163' in domain_lower or '163.com' in domain_lower:
+            return 'platform'
+        return 'supplier'
+
+    # ========== 10. 默认：客户 ==========
+    return 'customer'
+
+
 def build_customer_list(conn):
     """构建客户列表"""
     cursor = conn.cursor()
@@ -128,11 +286,12 @@ def build_customer_list(conn):
     for from_addr, from_name, first_date, last_date, count in cursor.fetchall():
         domain = extract_domain(from_addr)
         is_internal = 1 if domain in company_domains else 0
+        contact_type = 'internal' if is_internal else classify_contact(from_addr, from_name, domain)
 
         cursor.execute('''
-            INSERT OR REPLACE INTO customers (email, name, domain, first_contact, last_contact, email_count, is_internal)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (from_addr, from_name, domain, first_date, last_date, count, is_internal))
+            INSERT OR REPLACE INTO customers (email, name, domain, first_contact, last_contact, email_count, is_internal, contact_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (from_addr, from_name, domain, first_date, last_date, count, is_internal, contact_type))
         customers_added += 1
 
     # 同样处理收件人中的外部地址
@@ -324,16 +483,27 @@ def get_customer_threads(conn, customer_email):
     return result
 
 
-def get_all_external_customers(conn):
-    """获取所有外部客户列表"""
+def get_all_external_customers(conn, contact_type='customer'):
+    """获取所有外部客户列表，可按类型筛选"""
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT c.email, c.name, c.domain, c.first_contact, c.last_contact, c.email_count,
-               (SELECT COUNT(*) FROM threads t WHERE t.customer_email = c.email) as thread_count
-        FROM customers c
-        WHERE c.is_internal = 0 AND c.email_count > 0
-        ORDER BY c.email_count DESC
-    ''')
+    if contact_type == 'all':
+        cursor.execute('''
+            SELECT c.email, c.name, c.domain, c.first_contact, c.last_contact, c.email_count,
+                   (SELECT COUNT(*) FROM threads t WHERE t.customer_email = c.email) as thread_count,
+                   c.contact_type
+            FROM customers c
+            WHERE c.is_internal = 0 AND c.email_count > 0
+            ORDER BY c.email_count DESC
+        ''')
+    else:
+        cursor.execute('''
+            SELECT c.email, c.name, c.domain, c.first_contact, c.last_contact, c.email_count,
+                   (SELECT COUNT(*) FROM threads t WHERE t.customer_email = c.email) as thread_count,
+                   c.contact_type
+            FROM customers c
+            WHERE c.is_internal = 0 AND c.email_count > 0 AND c.contact_type = ?
+            ORDER BY c.email_count DESC
+        ''', (contact_type,))
     return cursor.fetchall()
 
 

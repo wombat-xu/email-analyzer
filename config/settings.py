@@ -12,15 +12,16 @@ EMAIL_ACCOUNTS = [
     # {"email": "sales@yourcompany.com", "password": "your_password"},
 ]
 
-# Anthropic API 配置
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# OpenRouter API 配置
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "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")
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # 数据库路径
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "emails.db")
 
 # AI 分析配置
-AI_MODEL = "claude-sonnet-4-6"
-MAX_TOKENS_PER_ANALYSIS = 4096
+AI_MODEL = "anthropic/claude-opus-4-6"  # OpenRouter 模型名
+MAX_TOKENS_PER_ANALYSIS = 16000
 
 # 商机挖掘配置
 DORMANT_MONTHS = 6  # 超过几个月未联系算沉睡客户

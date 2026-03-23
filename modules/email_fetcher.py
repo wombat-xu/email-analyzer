@@ -14,7 +14,9 @@ from config.settings import IMAP_SERVER, IMAP_PORT, IMAP_USE_SSL, DB_PATH
 def init_database():
     """初始化SQLite数据库"""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=60)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=60000")  # 等待60秒
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS emails (
@@ -48,8 +50,97 @@ def init_database():
     cursor.execute('''
         CREATE INDEX IF NOT EXISTS idx_account ON emails(account)
     ''')
+    # 邮箱账号管理表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS email_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE,
+            password TEXT,
+            imap_server TEXT,
+            salesperson_name TEXT,
+            added_at TEXT,
+            last_sync TEXT,
+            is_active INTEGER DEFAULT 1
+        )
+    ''')
+    # 同步状态表 - 记录每个账号每个文件夹的拉取情况
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sync_status (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account TEXT,
+            folder TEXT,
+            total_on_server INTEGER DEFAULT 0,
+            fetched_count INTEGER DEFAULT 0,
+            last_sync TEXT,
+            UNIQUE(account, folder)
+        )
+    ''')
+    # 后台任务表 - 记录进行中的任务
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_type TEXT,
+            description TEXT,
+            status TEXT DEFAULT 'running',
+            progress_current INTEGER DEFAULT 0,
+            progress_total INTEGER DEFAULT 0,
+            progress_text TEXT,
+            result TEXT,
+            created_at TEXT,
+            finished_at TEXT
+        )
+    ''')
     conn.commit()
     return conn
+
+
+def add_email_account(email_addr, password, salesperson_name='', imap_server=None):
+    """添加邮箱账号"""
+    conn = init_database()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO email_accounts (email, password, imap_server, salesperson_name, added_at, is_active)
+        VALUES (?, ?, ?, ?, ?, 1)
+    ''', (email_addr, password, imap_server or IMAP_SERVER, salesperson_name, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_all_accounts():
+    """获取所有已配置的邮箱账号"""
+    conn = init_database()
+    cursor = conn.cursor()
+    cursor.execute('SELECT email, password, imap_server, salesperson_name, last_sync, is_active FROM email_accounts WHERE is_active = 1')
+    accounts = cursor.fetchall()
+    conn.close()
+    return accounts
+
+
+def remove_email_account(email_addr):
+    """删除邮箱账号"""
+    conn = init_database()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE email_accounts SET is_active = 0 WHERE email = ?', (email_addr,))
+    conn.commit()
+    conn.close()
+
+
+def fetch_customer_from_all_accounts(customer_email):
+    """从所有已配置的邮箱账号中拉取某客户的全部邮件"""
+    accounts = get_all_accounts()
+    if not accounts:
+        print("没有配置任何邮箱账号")
+        return 0
+    total = 0
+    for acc_email, acc_pwd, acc_imap, acc_name, _, _ in accounts:
+        print(f"\n--- 从 {acc_email} ({acc_name}) 拉取 {customer_email} 的邮件 ---")
+        try:
+            count = fetch_customer_emails(acc_email, acc_pwd, customer_email)
+            total += count
+        except Exception as e:
+            print(f"  账号 {acc_email} 拉取失败: {e}")
+    print(f"\n===== 所有账号共新增 {total} 封关于 {customer_email} 的邮件 =====")
+    return total
 
 
 def decode_mime_header(header_value):
@@ -160,8 +251,11 @@ def list_folders(mail):
     return folder_names
 
 
-def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None):
-    """从指定文件夹拉取邮件"""
+def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None, progress_callback=None, task_id=None):
+    """从指定文件夹拉取邮件
+    progress_callback: 可选回调函数 (current, total, text) 用于报告进度
+    task_id: 可选任务ID，用于更新数据库中的任务进度
+    """
     cursor = conn.cursor()
 
     try:
@@ -183,14 +277,67 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None)
     if total == 0:
         return 0
 
+    # 倒序：从最新的邮件开始拉取
+    msg_ids = list(reversed(msg_ids))
     if limit:
-        msg_ids = msg_ids[-limit:]  # 取最近的N封
+        msg_ids = msg_ids[:limit]  # 取最近的N封
 
-    print(f"  文件夹 [{folder_name}] 共 {total} 封邮件，本次拉取 {len(msg_ids)} 封")
+    to_fetch = len(msg_ids)
+    print(f"  文件夹 [{folder_name}] 服务器共 {total} 封，本次拉取 {to_fetch} 封（最新优先）")
+
+    # 记录同步状态
+    cursor.execute('''
+        INSERT OR REPLACE INTO sync_status (account, folder, total_on_server, fetched_count, last_sync)
+        VALUES (?, ?, ?, COALESCE((SELECT fetched_count FROM sync_status WHERE account=? AND folder=?), 0), ?)
+    ''', (account_email, folder_name, total, account_email, folder_name, datetime.now().isoformat()))
+
+    # 预加载已有的 message_id 到内存（避免逐条查数据库）
+    cursor.execute('SELECT message_id FROM emails WHERE account = ? AND folder = ?', (account_email, folder_name))
+    existing_ids = set(r[0] for r in cursor.fetchall())
+    estimated_new = to_fetch - len(existing_ids)
+    print(f"    该文件夹已有 {len(existing_ids)} 封，需下载约 {estimated_new} 封")
+
+    # 如果已有数量 >= 服务器总数的95%，跳过此文件夹（已基本完成）
+    if len(existing_ids) >= total * 0.95 and estimated_new < 50:
+        print(f"    ✓ 已基本完成，跳过")
+        return 0
 
     fetched = 0
+    skipped = 0
     for i, msg_id in enumerate(msg_ids):
         try:
+            # 先只获取 Message-ID 头（极快，不下载正文）
+            status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+            if status != 'OK':
+                continue
+
+            # 解析 Message-ID
+            mid = ''
+            if header_data and header_data[0] and len(header_data[0]) > 1:
+                raw = header_data[0][1]
+                if isinstance(raw, bytes):
+                    text = raw.decode('utf-8', errors='replace')
+                    for line in text.split('\n'):
+                        if 'message-id' in line.lower():
+                            mid = line.split(':', 1)[-1].strip()
+                            break
+            if not mid:
+                mid = f"generated-{account_email}-{folder_name}-{msg_id.decode()}"
+
+            # 内存中快速判断是否已存在
+            if mid in existing_ids:
+                skipped += 1
+                # 快速跳过，不下载完整邮件
+                if (i + 1) % 1000 == 0:
+                    progress_text = f"[{folder_name}] 扫描 {i+1}/{to_fetch}，跳过 {skipped}，新增 {fetched}"
+                    print(f"    {progress_text}")
+                    if task_id:
+                        cursor.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
+                                       (i + 1, to_fetch, progress_text, task_id))
+                        conn.commit()
+                continue
+
+            # 新邮件：下载完整内容
             status, msg_data = mail.fetch(msg_id, '(RFC822)')
             if status != 'OK':
                 continue
@@ -198,16 +345,7 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None)
             raw_email = msg_data[0][1]
             msg = email.message_from_bytes(raw_email)
 
-            # 提取关键信息
-            message_id = msg.get('Message-ID', '')
-            if not message_id:
-                message_id = f"generated-{account_email}-{folder_name}-{msg_id.decode()}"
-
-            # 检查是否已存在
-            cursor.execute('SELECT id FROM emails WHERE message_id = ?', (message_id,))
-            if cursor.fetchone():
-                continue
-
+            message_id = msg.get('Message-ID', '') or mid
             from_addr, from_name = extract_email_address(msg.get('From', ''))
             to_addr = decode_mime_header(msg.get('To', ''))
             cc_addr = decode_mime_header(msg.get('Cc', ''))
@@ -215,7 +353,6 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None)
             date_str = msg.get('Date', '')
             in_reply_to = msg.get('In-Reply-To', '')
             references = msg.get('References', '')
-
             body_text, body_html = get_email_body(msg)
 
             cursor.execute('''
@@ -231,16 +368,37 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None)
                 in_reply_to, references, str(dict(msg.items())),
                 datetime.now().isoformat()
             ))
-
             fetched += 1
-            if (i + 1) % 100 == 0:
-                conn.commit()
-                print(f"    已处理 {i+1}/{len(msg_ids)} 封...")
+            existing_ids.add(message_id)
+
+            if fetched % 50 == 0:
+                try:
+                    conn.commit()
+                except Exception as ce:
+                    print(f"    COMMIT ERROR: {ce}")
 
         except Exception as e:
-            print(f"    邮件 {msg_id} 处理失败: {e}")
+            if 'locked' in str(e).lower():
+                print(f"    DB LOCKED: {e}")
             continue
 
+        if (i + 1) % 200 == 0:
+            conn.commit()
+            progress_text = f"[{folder_name}] {i+1}/{to_fetch}，新增 {fetched}，跳过 {skipped}"
+            print(f"    {progress_text}")
+            if progress_callback:
+                progress_callback(i + 1, to_fetch, progress_text)
+            if task_id:
+                cursor.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
+                               (i + 1, to_fetch, progress_text, task_id))
+                conn.commit()
+
+    conn.commit()
+    # 更新同步状态
+    cursor.execute('''
+        UPDATE sync_status SET fetched_count = fetched_count + ?, last_sync = ?
+        WHERE account = ? AND folder = ?
+    ''', (fetched, datetime.now().isoformat(), account_email, folder_name))
     conn.commit()
     print(f"  完成！新增 {fetched} 封邮件")
     return fetched
@@ -249,6 +407,8 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None)
 def fetch_all_emails(account_email, password, limit_per_folder=None):
     """拉取一个账号的所有邮件"""
     conn = init_database()
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")  # 等待30秒而不是立即失败
     mail = connect_imap(account_email, password)
 
     folders = list_folders(mail)
@@ -268,6 +428,251 @@ def fetch_all_emails(account_email, password, limit_per_folder=None):
     conn.close()
     print(f"\n===== 总计新增 {total_fetched} 封邮件 =====")
     return total_fetched
+
+
+def fetch_customer_emails(account_email, password, customer_email, task_id=None, search_keywords=None):
+    """针对特定客户，全量拉取邮件并本地筛选。
+    因为网易企业邮箱 IMAP SEARCH FROM/TO 不可用，只能全量拉取后在本地按关键词匹配。
+    为避免重复拉取已有邮件，会跳过已存在的邮件。
+    """
+    conn = init_database()
+    mail = connect_imap(account_email, password)
+    folders = list_folders(mail)
+    cursor = conn.cursor()
+
+    # 构建本地匹配关键词
+    match_keywords = set()
+    match_keywords.add(customer_email.lower())
+    if '@' in customer_email:
+        domain = customer_email.split('@')[1].lower()
+        prefix = customer_email.split('@')[0].lower()
+        match_keywords.add(domain)
+        if len(prefix) >= 4:
+            match_keywords.add(prefix)
+    if search_keywords:
+        match_keywords.update(k.lower() for k in search_keywords)
+
+    print(f"\n全量拉取 {account_email}，本地匹配关键词: {match_keywords}")
+    print(f"（网易企业邮箱不支持IMAP SEARCH，改用全量拉取+本地筛选）")
+
+    total_fetched = 0
+    total_matched = 0
+    total_scanned = 0
+
+    # 优先处理收件箱和已发送
+    priority = ['INBOX', '&XfJT0ZAB-']
+    ordered = [f for f in priority if f in folders] + [f for f in folders if f not in priority]
+
+    for fi, folder_name in enumerate(ordered):
+        try:
+            status, _ = mail.select(f'"{folder_name}"', readonly=True)
+            if status != 'OK':
+                continue
+        except Exception:
+            # 断线重连
+            try:
+                mail = connect_imap(account_email, password)
+                status, _ = mail.select(f'"{folder_name}"', readonly=True)
+                if status != 'OK':
+                    continue
+            except Exception:
+                continue
+
+        try:
+            status, messages = mail.search(None, 'ALL')
+            if status != 'OK' or not messages[0]:
+                continue
+        except Exception:
+            try:
+                mail = connect_imap(account_email, password)
+                mail.select(f'"{folder_name}"', readonly=True)
+                status, messages = mail.search(None, 'ALL')
+                if status != 'OK' or not messages[0]:
+                    continue
+            except Exception:
+                continue
+
+        msg_ids = messages[0].split()
+        folder_total = len(msg_ids)
+        # 倒序（最新优先）
+        msg_ids = list(reversed(msg_ids))
+
+        folder_matched = 0
+        folder_fetched = 0
+
+        for mi, msg_id in enumerate(msg_ids):
+            try:
+                # 先用 HEADER 快速获取头信息，判断是否匹配
+                try:
+                    status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (FROM TO CC)])')
+                except Exception:
+                    # 断线重连
+                    try:
+                        mail = connect_imap(account_email, password)
+                        mail.select(f'"{folder_name}"', readonly=True)
+                        status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (FROM TO CC)])')
+                    except Exception:
+                        continue
+                if status != 'OK':
+                    continue
+
+                header_text = ''
+                if header_data and header_data[0] and len(header_data[0]) > 1:
+                    raw = header_data[0][1]
+                    header_text = raw.decode('utf-8', errors='replace').lower()
+
+                # 检查是否匹配任何关键词
+                matched = any(kw in header_text for kw in match_keywords)
+                if not matched:
+                    continue
+
+                folder_matched += 1
+
+                # 匹配到了，拉取完整邮件
+                status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                if status != 'OK':
+                    continue
+
+                raw_email = msg_data[0][1]
+                msg = email.message_from_bytes(raw_email)
+
+                message_id = msg.get('Message-ID', '')
+                if not message_id:
+                    message_id = f"generated-{account_email}-{folder_name}-{msg_id.decode()}"
+
+                cursor.execute('SELECT id FROM emails WHERE message_id = ?', (message_id,))
+                if cursor.fetchone():
+                    continue
+
+                from_addr, from_name = extract_email_address(msg.get('From', ''))
+                to_addr = decode_mime_header(msg.get('To', ''))
+                cc_addr = decode_mime_header(msg.get('Cc', ''))
+                subject = decode_mime_header(msg.get('Subject', ''))
+                date_str = msg.get('Date', '')
+                in_reply_to = msg.get('In-Reply-To', '')
+                references = msg.get('References', '')
+                body_text, body_html = get_email_body(msg)
+
+                cursor.execute('''
+                    INSERT OR IGNORE INTO emails
+                    (message_id, account, folder, from_addr, from_name, to_addr, cc_addr,
+                     subject, date, body_text, body_html, in_reply_to, references_header,
+                     raw_headers, fetched_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    message_id, account_email, folder_name,
+                    from_addr, from_name, to_addr, cc_addr,
+                    subject, date_str, body_text, body_html,
+                    in_reply_to, references, str(dict(msg.items())),
+                    datetime.now().isoformat()
+                ))
+                folder_fetched += 1
+
+                if folder_fetched % 20 == 0:
+                    conn.commit()
+
+            except Exception as e:
+                continue
+
+            # 每500封更新一次进度
+            if (mi + 1) % 500 == 0:
+                progress_text = f"{account_email} [{folder_name}] 扫描 {mi+1}/{folder_total}，匹配 {folder_matched}，新增 {folder_fetched}"
+                print(f"    {progress_text}")
+                if task_id:
+                    cursor.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
+                                   (mi + 1, folder_total, progress_text, task_id))
+                    conn.commit()
+
+        conn.commit()
+        total_scanned += folder_total
+        total_matched += folder_matched
+        total_fetched += folder_fetched
+
+        if folder_matched > 0:
+            print(f"  [{folder_name}] 扫描 {folder_total} 封，匹配 {folder_matched}，新增 {folder_fetched}")
+
+        if task_id:
+            progress_text = f"{account_email}: 已扫描 {fi+1}/{len(ordered)} 个文件夹（{total_scanned}封），匹配 {total_matched}，新增 {total_fetched}"
+            cursor.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
+                           (fi + 1, len(ordered), progress_text, task_id))
+            conn.commit()
+
+    try:
+        mail.logout()
+    except Exception:
+        pass
+    conn.close()
+    print(f"\n===== {account_email}: 扫描 {total_scanned} 封，匹配 {total_matched}，新增 {total_fetched} =====")
+    return total_fetched
+
+
+def create_task(description, task_type='fetch'):
+    """创建后台任务记录"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO tasks (task_type, description, status, created_at)
+        VALUES (?, ?, 'running', ?)
+    ''', (task_type, description, datetime.now().isoformat()))
+    task_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return task_id
+
+
+def finish_task(task_id, result=''):
+    """完成后台任务"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE tasks SET status='done', result=?, finished_at=? WHERE id=?
+    ''', (result, datetime.now().isoformat(), task_id))
+    conn.commit()
+    conn.close()
+
+
+def fail_task(task_id, error=''):
+    """标记任务失败"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE tasks SET status='failed', result=?, finished_at=? WHERE id=?
+    ''', (error, datetime.now().isoformat(), task_id))
+    conn.commit()
+    conn.close()
+
+
+def get_running_tasks():
+    """获取正在运行的任务"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, task_type, description, progress_current, progress_total, progress_text, created_at FROM tasks WHERE status='running'")
+    tasks = cursor.fetchall()
+    conn.close()
+    return tasks
+
+
+def get_recent_tasks(limit=10):
+    """获取最近的任务（含已完成）"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, task_type, description, status, progress_current, progress_total, progress_text, result, created_at, finished_at FROM tasks ORDER BY id DESC LIMIT ?", (limit,))
+    tasks = cursor.fetchall()
+    conn.close()
+    return tasks
+
+
+def get_sync_status():
+    """获取所有账号的同步状态"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT account, folder, total_on_server, fetched_count, last_sync
+        FROM sync_status ORDER BY account, folder
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 
 def get_email_stats():
