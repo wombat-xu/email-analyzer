@@ -251,31 +251,67 @@ def list_folders(mail):
     return folder_names
 
 
-def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None, progress_callback=None, task_id=None):
+def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None, progress_callback=None, task_id=None, password=None):
     """从指定文件夹拉取邮件
     progress_callback: 可选回调函数 (current, total, text) 用于报告进度
     task_id: 可选任务ID，用于更新数据库中的任务进度
+    password: 可选密码，用于IMAP断线自动重连
+    返回: (fetched_count, mail_object) 元组
     """
     cursor = conn.cursor()
+
+    def _reconnect(mail_obj):
+        """IMAP断线重连"""
+        if not password:
+            return None
+        try:
+            print(f"    IMAP连接断开，正在重连...")
+            mail_obj = connect_imap(account_email, password)
+            mail_obj.select(f'"{folder_name}"', readonly=True)
+            print(f"    重连成功！")
+            return mail_obj
+        except Exception as re:
+            print(f"    重连失败: {re}")
+            return None
 
     try:
         status, _ = mail.select(f'"{folder_name}"', readonly=True)
         if status != 'OK':
             print(f"  无法打开文件夹: {folder_name}")
-            return 0
+            return 0, mail
     except Exception as e:
         print(f"  打开文件夹失败 {folder_name}: {e}")
-        return 0
+        new_mail = _reconnect(mail)
+        if new_mail is None:
+            return 0, mail
+        mail = new_mail
+        try:
+            status, _ = mail.select(f'"{folder_name}"', readonly=True)
+            if status != 'OK':
+                return 0, mail
+        except Exception:
+            return 0, mail
 
     # 搜索所有邮件
-    status, messages = mail.search(None, 'ALL')
+    try:
+        status, messages = mail.search(None, 'ALL')
+    except Exception as e:
+        print(f"  搜索邮件失败 {folder_name}: {e}")
+        new_mail = _reconnect(mail)
+        if new_mail is None:
+            return 0, mail
+        mail = new_mail
+        try:
+            status, messages = mail.search(None, 'ALL')
+        except Exception:
+            return 0, mail
     if status != 'OK':
-        return 0
+        return 0, mail
 
     msg_ids = messages[0].split()
     total = len(msg_ids)
     if total == 0:
-        return 0
+        return 0, mail
 
     # 倒序：从最新的邮件开始拉取
     msg_ids = list(reversed(msg_ids))
@@ -300,14 +336,30 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None,
     # 如果已有数量 >= 服务器总数的95%，跳过此文件夹（已基本完成）
     if len(existing_ids) >= total * 0.95 and estimated_new < 50:
         print(f"    ✓ 已基本完成，跳过")
-        return 0
+        return 0, mail
 
     fetched = 0
     skipped = 0
+    consecutive_errors = 0
     for i, msg_id in enumerate(msg_ids):
         try:
             # 先只获取 Message-ID 头（极快，不下载正文）
-            status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+            try:
+                status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+            except Exception as fetch_err:
+                new_mail = _reconnect(mail)
+                if new_mail is None:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        print(f"    连续 {consecutive_errors} 次失败，放弃此文件夹")
+                        break
+                    continue
+                mail = new_mail
+                consecutive_errors = 0
+                try:
+                    status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+                except Exception:
+                    continue
             if status != 'OK':
                 continue
 
@@ -338,7 +390,22 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None,
                 continue
 
             # 新邮件：下载完整内容
-            status, msg_data = mail.fetch(msg_id, '(RFC822)')
+            try:
+                status, msg_data = mail.fetch(msg_id, '(RFC822)')
+            except Exception as fetch_err:
+                new_mail = _reconnect(mail)
+                if new_mail is None:
+                    consecutive_errors += 1
+                    if consecutive_errors >= 3:
+                        print(f"    连续 {consecutive_errors} 次失败，放弃此文件夹")
+                        break
+                    continue
+                mail = new_mail
+                consecutive_errors = 0
+                try:
+                    status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                except Exception:
+                    continue
             if status != 'OK':
                 continue
 
@@ -370,6 +437,7 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None,
             ))
             fetched += 1
             existing_ids.add(message_id)
+            consecutive_errors = 0
 
             if fetched % 50 == 0:
                 try:
@@ -401,11 +469,11 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None,
     ''', (fetched, datetime.now().isoformat(), account_email, folder_name))
     conn.commit()
     print(f"  完成！新增 {fetched} 封邮件")
-    return fetched
+    return fetched, mail
 
 
-def fetch_all_emails(account_email, password, limit_per_folder=None):
-    """拉取一个账号的所有邮件"""
+def fetch_all_emails(account_email, password, limit_per_folder=None, task_id=None):
+    """拉取一个账号的所有邮件（支持IMAP断线自动重连）"""
     conn = init_database()
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")  # 等待30秒而不是立即失败
@@ -421,10 +489,24 @@ def fetch_all_emails(account_email, password, limit_per_folder=None):
     ordered_folders = [f for f in priority_folders if f in folders] + other_folders
 
     for folder in ordered_folders:
-        fetched = fetch_emails_from_folder(mail, folder, account_email, conn, limit_per_folder)
-        total_fetched += fetched
+        try:
+            fetched, mail = fetch_emails_from_folder(
+                mail, folder, account_email, conn, limit_per_folder,
+                password=password, task_id=task_id
+            )
+            total_fetched += fetched
+        except Exception as e:
+            print(f"  文件夹 {folder} 处理失败: {e}")
+            try:
+                mail = connect_imap(account_email, password)
+            except Exception:
+                print(f"  重连失败，跳过剩余文件夹")
+                break
 
-    mail.logout()
+    try:
+        mail.logout()
+    except Exception:
+        pass
     conn.close()
     print(f"\n===== 总计新增 {total_fetched} 封邮件 =====")
     return total_fetched
@@ -640,6 +722,20 @@ def fail_task(task_id, error=''):
     ''', (error, datetime.now().isoformat(), task_id))
     conn.commit()
     conn.close()
+
+
+def cleanup_zombie_tasks():
+    """清理所有stuck为running状态的僵尸任务"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE tasks SET status='failed', result='进程异常退出（自动清理）', finished_at=?
+        WHERE status='running'
+    """, (datetime.now().isoformat(),))
+    cleaned = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return cleaned
 
 
 def get_running_tasks():

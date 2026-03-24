@@ -230,13 +230,17 @@ def show_account_management():
                             inner_pct = fi / len(folders) + (cur / total) / len(folders) if total > 0 else pct
                             progress_bar.progress(min(inner_pct, 1.0), text=text)
 
-                        fetched = fetch_emails_from_folder(
+                        fetched, mail = fetch_emails_from_folder(
                             mail, folder, acc_email, conn, limit,
-                            progress_callback=update_progress, task_id=task_id
+                            progress_callback=update_progress, task_id=task_id,
+                            password=acc_pwd
                         )
                         total_fetched += fetched
 
-                    mail.logout()
+                    try:
+                        mail.logout()
+                    except Exception:
+                        pass
                     conn.close()
                     progress_bar.progress(1.0, text=f"✅ {acc_email} 完成！新增 {total_fetched} 封")
                     status_text.empty()
