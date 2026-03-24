@@ -59,6 +59,7 @@ def main():
     pages = [
         "📊 仪表盘",
         "⚙️ 邮箱账号管理",
+        "📬 全部邮件",
         "🏆 TOP客户（优先分析）",
         "👥 客户列表",
         "🔍 客户详情",
@@ -72,6 +73,8 @@ def main():
         show_dashboard()
     elif page == "⚙️ 邮箱账号管理":
         show_account_management()
+    elif page == "📬 全部邮件":
+        show_all_emails()
     elif page == "🏆 TOP客户（优先分析）":
         show_top_customers()
     elif page == "👥 客户列表":
@@ -256,6 +259,138 @@ def show_account_management():
                 from modules.email_parser import process_all
                 process_all()
             st.success("邮件解析完成！")
+
+
+def show_all_emails():
+    """全部邮件浏览"""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    st.subheader("📬 全部邮件")
+
+    # 获取筛选选项
+    cursor.execute('SELECT DISTINCT account FROM emails ORDER BY account')
+    accounts = [r[0] for r in cursor.fetchall()]
+    cursor.execute('SELECT DISTINCT folder FROM emails ORDER BY folder')
+    folders = [r[0] for r in cursor.fetchall()]
+
+    # 筛选区
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        search = st.text_input("搜索（主题/发件人/收件人）", "", key="email_search")
+    with col2:
+        account_filter = st.selectbox("账号", ["全部"] + accounts, key="email_account")
+    with col3:
+        folder_filter = st.selectbox("文件夹", ["全部"] + folders, key="email_folder")
+    with col4:
+        sort_order = st.selectbox("排序", ["最新优先", "最旧优先"], key="email_sort")
+
+    # 构建查询
+    where_clauses = []
+    params = []
+    if search:
+        where_clauses.append('(subject LIKE ? OR from_addr LIKE ? OR from_name LIKE ? OR to_addr LIKE ?)')
+        params.extend([f'%{search}%'] * 4)
+    if account_filter != "全部":
+        where_clauses.append('account = ?')
+        params.append(account_filter)
+    if folder_filter != "全部":
+        where_clauses.append('folder = ?')
+        params.append(folder_filter)
+
+    where_sql = (' WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
+    order = 'DESC' if sort_order == "最新优先" else 'ASC'
+
+    # 总数
+    cursor.execute(f'SELECT COUNT(*) FROM emails{where_sql}', params)
+    total = cursor.fetchone()[0]
+
+    # 分页
+    page_size = 50
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    if 'email_page' not in st.session_state:
+        st.session_state.email_page = 1
+    # 筛选条件变化时重置页码
+    filter_key = f"{search}|{account_filter}|{folder_filter}"
+    if st.session_state.get('email_filter_key') != filter_key:
+        st.session_state.email_page = 1
+        st.session_state.email_filter_key = filter_key
+
+    current_page = st.session_state.email_page
+    offset = (current_page - 1) * page_size
+
+    # 分页控制
+    pcol1, pcol2, pcol3, pcol4, pcol5 = st.columns([1, 1, 2, 1, 1])
+    with pcol1:
+        if st.button("上一页", disabled=(current_page <= 1), key="prev_page"):
+            st.session_state.email_page -= 1
+            st.rerun()
+    with pcol2:
+        if st.button("下一页", disabled=(current_page >= total_pages), key="next_page"):
+            st.session_state.email_page += 1
+            st.rerun()
+    with pcol3:
+        st.caption(f"第 {current_page}/{total_pages} 页，共 {total:,} 封邮件")
+    with pcol4:
+        jump = st.number_input("跳转", min_value=1, max_value=total_pages, value=current_page, key="jump_page", label_visibility="collapsed")
+    with pcol5:
+        if st.button("跳转", key="do_jump"):
+            st.session_state.email_page = jump
+            st.rerun()
+
+    # 查询当前页数据
+    cursor.execute(f'''
+        SELECT id, date, from_addr, from_name, to_addr, subject, folder, account, body_text, body_html
+        FROM emails{where_sql}
+        ORDER BY date {order}
+        LIMIT ? OFFSET ?
+    ''', params + [page_size, offset])
+    rows = cursor.fetchall()
+
+    if rows:
+        # 表格概览
+        data = []
+        for r in rows:
+            data.append({
+                "日期": format_date(r[1]),
+                "发件人": f"{r[3]} <{r[2]}>" if r[3] else r[2],
+                "收件人": (r[4] or '')[:50],
+                "主题": (r[5] or '')[:80],
+                "文件夹": r[6],
+                "账号": r[7],
+            })
+        st.dataframe(pd.DataFrame(data), use_container_width=True, height=400)
+
+        # 邮件详情展开
+        st.divider()
+        st.caption("点击展开查看邮件正文：")
+        for r in rows:
+            email_id, date_str, from_addr, from_name, to_addr, subject, folder, account, body_text, body_html = r
+            label = f"📩 {format_date(date_str)} | {from_name or from_addr} → {(to_addr or '')[:30]} | {(subject or '(无主题)')[:60]}"
+            with st.expander(label):
+                ecol1, ecol2 = st.columns(2)
+                with ecol1:
+                    st.markdown(f"**发件人：** {from_name} &lt;{from_addr}&gt;")
+                    st.markdown(f"**收件人：** {to_addr}")
+                with ecol2:
+                    st.markdown(f"**日期：** {date_str}")
+                    st.markdown(f"**文件夹：** {folder} ({account})")
+                st.markdown(f"**主题：** {subject}")
+                st.divider()
+                body = get_email_text(body_text, body_html)
+                if body:
+                    st.markdown(
+                        f'<div style="background:#f5f5f5;padding:12px 16px;border-left:4px solid #9e9e9e;'
+                        f'border-radius:4px;font-size:13px;line-height:1.7;white-space:pre-wrap;max-height:500px;overflow-y:auto">'
+                        f'{body[:5000]}</div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.info("该邮件无文本正文")
+    else:
+        st.info("没有找到符合条件的邮件")
+
+    conn.close()
 
 
 def show_dashboard():
