@@ -1001,6 +1001,192 @@ def show_customer_list():
     conn.close()
 
 
+def _build_report_markdown(profile, email_addr, earliest, latest, total_count, profile_row):
+    """生成 Markdown 格式的客户分析报告"""
+    lines = []
+    lines.append(f"# 客户分析报告 — {email_addr}\n")
+    lines.append(f"> 基于 {earliest} 至 {latest} 的 {total_count:,} 封邮件分析所得")
+    lines.append(f"> 分析时间：{(profile_row[1] or '')[:19]}\n")
+
+    basic = profile.get('basic_info', {})
+    lines.append("## 基本信息\n")
+    lines.append(f"| 项目 | 内容 |")
+    lines.append(f"|------|------|")
+    for k, v in basic.items():
+        lines.append(f"| {k} | {v} |")
+
+    products = profile.get('products_of_interest', [])
+    if products:
+        lines.append(f"\n## 感兴趣的产品\n")
+        lines.append(", ".join(products))
+
+    behavior = profile.get('behavior_profile', {})
+    if behavior:
+        lines.append(f"\n## 行为画像\n")
+        lines.append(f"| 维度 | 分析 |")
+        lines.append(f"|------|------|")
+        for k, v in behavior.items():
+            lines.append(f"| {k} | {v} |")
+
+    rel = profile.get('relationship_status', {})
+    if rel:
+        lines.append(f"\n## 关系状态\n")
+        for k, v in rel.items():
+            lines.append(f"- **{k}**: {v}")
+
+    strat = profile.get('strategy_recommendation', {})
+    if strat:
+        lines.append(f"\n## 应对策略\n")
+        lines.append(f"**总体方针**: {strat.get('approach', '')}\n")
+        lines.append("### 应该做")
+        for item in strat.get('dos', []):
+            lines.append(f"- {item}")
+        lines.append("\n### 不应该做")
+        for item in strat.get('donts', []):
+            lines.append(f"- {item}")
+        lines.append("\n### 建议下一步")
+        for item in strat.get('next_steps', []):
+            lines.append(f"- {item}")
+
+    opps = profile.get('opportunities', [])
+    if opps:
+        lines.append(f"\n## 商机\n")
+        for opp in opps:
+            lines.append(f"- **[{opp.get('priority','')}] {opp.get('type','')}**: {opp.get('description','')}")
+
+    convos = profile.get('key_conversations', [])
+    if convos:
+        lines.append(f"\n## 关键对话复盘\n")
+        for convo in convos:
+            lines.append(f"### {convo.get('topic', '对话')} ({convo.get('date', '')})")
+            lines.append(f"**概况**: {convo.get('summary', '')}")
+            lines.append(f"**结果**: {convo.get('outcome', '')}")
+            rounds = convo.get('negotiation_rounds', [])
+            for rnd in rounds:
+                lines.append(f"\n**第 {rnd.get('round', '')} 轮**")
+                if rnd.get('customer_said'):
+                    lines.append(f"\n> 🔵 客户: {rnd['customer_said']}")
+                if rnd.get('our_response'):
+                    lines.append(f"\n> 🟢 我方: {rnd['our_response']}")
+                if rnd.get('highlight'):
+                    lines.append(f"\n💡 要点: {rnd['highlight']}")
+            lesson = convo.get('lesson_learned', '')
+            if lesson:
+                lines.append(f"\n📚 经验总结: {lesson}\n")
+
+    return "\n".join(lines)
+
+
+def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profile_row):
+    """生成 PDF 格式的客户分析报告"""
+    try:
+        from fpdf import FPDF
+
+        class PDF(FPDF):
+            def header(self):
+                self.set_font("chinese", "B", 14)
+                self.cell(0, 10, f"客户分析报告 — {email_addr}", align="C", new_x="LMARGIN", new_y="NEXT")
+                self.set_font("chinese", "", 9)
+                self.cell(0, 6, f"基于 {earliest} 至 {latest} 的 {total_count:,} 封邮件  |  分析时间: {(profile_row[1] or '')[:19]}", align="C", new_x="LMARGIN", new_y="NEXT")
+                self.ln(4)
+
+        pdf = PDF()
+        # 加载中文字体
+        font_path = "/System/Library/Fonts/STHeiti Medium.ttc"
+        pdf.add_font("chinese", "", font_path, uni=True)
+        pdf.add_font("chinese", "B", font_path, uni=True)
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+
+        def section(title):
+            pdf.set_font("chinese", "B", 12)
+            pdf.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+
+        def text(content, size=10):
+            pdf.set_font("chinese", "", size)
+            pdf.multi_cell(0, 6, str(content))
+            pdf.ln(1)
+
+        def kv(key, val):
+            pdf.set_font("chinese", "B", 10)
+            pdf.cell(50, 6, str(key) + ": ")
+            pdf.set_font("chinese", "", 10)
+            pdf.multi_cell(0, 6, str(val))
+
+        # 基本信息
+        basic = profile.get('basic_info', {})
+        section("基本信息")
+        for k, v in basic.items():
+            kv(k, v)
+
+        products = profile.get('products_of_interest', [])
+        if products:
+            section("感兴趣的产品")
+            text(", ".join(products))
+
+        behavior = profile.get('behavior_profile', {})
+        if behavior:
+            section("行为画像")
+            for k, v in behavior.items():
+                kv(k, v)
+
+        rel = profile.get('relationship_status', {})
+        if rel:
+            section("关系状态")
+            for k, v in rel.items():
+                kv(k, v)
+
+        strat = profile.get('strategy_recommendation', {})
+        if strat:
+            section("应对策略")
+            text(strat.get('approach', ''))
+            pdf.set_font("chinese", "B", 10)
+            pdf.cell(0, 6, "应该做:", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("chinese", "", 10)
+            for item in strat.get('dos', []):
+                pdf.multi_cell(0, 6, f"  · {item}")
+            pdf.set_font("chinese", "B", 10)
+            pdf.cell(0, 6, "不应该做:", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("chinese", "", 10)
+            for item in strat.get('donts', []):
+                pdf.multi_cell(0, 6, f"  · {item}")
+            pdf.set_font("chinese", "B", 10)
+            pdf.cell(0, 6, "建议下一步:", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("chinese", "", 10)
+            for item in strat.get('next_steps', []):
+                pdf.multi_cell(0, 6, f"  · {item}")
+
+        opps = profile.get('opportunities', [])
+        if opps:
+            section("商机")
+            for opp in opps:
+                text(f"[{opp.get('priority','')}] {opp.get('type','')}: {opp.get('description','')}")
+
+        convos = profile.get('key_conversations', [])
+        if convos:
+            section("关键对话复盘")
+            for convo in convos:
+                pdf.set_font("chinese", "B", 10)
+                pdf.multi_cell(0, 6, f"{convo.get('topic', '')} ({convo.get('date', '')})")
+                pdf.set_font("chinese", "", 9)
+                pdf.multi_cell(0, 5, f"概况: {convo.get('summary', '')}")
+                pdf.multi_cell(0, 5, f"结果: {convo.get('outcome', '')}")
+                for rnd in convo.get('negotiation_rounds', []):
+                    if rnd.get('customer_said'):
+                        pdf.multi_cell(0, 5, f"  客户: {rnd['customer_said'][:200]}")
+                    if rnd.get('our_response'):
+                        pdf.multi_cell(0, 5, f"  我方: {rnd['our_response'][:200]}")
+                    if rnd.get('highlight'):
+                        pdf.multi_cell(0, 5, f"  要点: {rnd['highlight']}")
+                pdf.ln(3)
+
+        return pdf.output()
+    except Exception as e:
+        print(f"PDF生成失败: {e}")
+        return None
+
+
 def _get_cached_date_range(cursor, cache_key, where_clause, params):
     """带 session_state 缓存的日期范围查询"""
     full_key = f"date_range_{cache_key}"
@@ -1381,52 +1567,18 @@ def show_customer_detail():
                 st.success("已提交重新分析任务！")
                 st.rerun()
         with bcol2:
-            # 导出分析报告
-            report_lines = []
-            report_lines.append(f"客户分析报告 - {email_addr}")
-            report_lines.append(f"分析时间: {(profile_row[1] or '')[:19]}")
-            report_lines.append(f"邮件范围: {earliest_fmt} ~ {latest_fmt}，共 {total_count:,} 封")
-            report_lines.append("=" * 60)
-            basic = profile.get('basic_info', {})
-            report_lines.append(f"\n【基本信息】")
-            for k, v in basic.items():
-                report_lines.append(f"  {k}: {v}")
-            products = profile.get('products_of_interest', [])
-            if products:
-                report_lines.append(f"\n【感兴趣的产品】\n  {', '.join(products)}")
-            behavior = profile.get('behavior_profile', {})
-            if behavior:
-                report_lines.append(f"\n【行为画像】")
-                for k, v in behavior.items():
-                    report_lines.append(f"  {k}: {v}")
-            rel = profile.get('relationship_status', {})
-            if rel:
-                report_lines.append(f"\n【关系状态】")
-                for k, v in rel.items():
-                    report_lines.append(f"  {k}: {v}")
-            strat = profile.get('strategy_recommendation', {})
-            if strat:
-                report_lines.append(f"\n【应对策略】\n  {strat.get('approach', '')}")
-                report_lines.append("  应该做:")
-                for item in strat.get('dos', []):
-                    report_lines.append(f"    - {item}")
-                report_lines.append("  不应该做:")
-                for item in strat.get('donts', []):
-                    report_lines.append(f"    - {item}")
-                report_lines.append("  下一步:")
-                for item in strat.get('next_steps', []):
-                    report_lines.append(f"    - {item}")
-            opps = profile.get('opportunities', [])
-            if opps:
-                report_lines.append(f"\n【商机】")
-                for opp in opps:
-                    report_lines.append(f"  [{opp.get('priority','')}] {opp.get('type','')}: {opp.get('description','')}")
-            report_text = "\n".join(report_lines)
-            st.download_button(
-                "📥 导出分析报告", report_text,
-                file_name=f"客户分析_{email_addr.split('@')[0]}_{earliest_fmt}.txt",
-                mime="text/plain", key="export_report"
-            )
+            # 导出分析报告 — 生成 Markdown
+            md = _build_report_markdown(profile, email_addr, earliest_fmt, latest_fmt, total_count, profile_row)
+            fname_base = f"客户分析_{email_addr.split('@')[0]}_{earliest_fmt}"
+            ecol1, ecol2 = st.columns(2)
+            with ecol1:
+                st.download_button("📥 Markdown", md, file_name=f"{fname_base}.md", mime="text/markdown", key="export_md")
+            with ecol2:
+                pdf_bytes = _build_report_pdf(profile, email_addr, earliest_fmt, latest_fmt, total_count, profile_row)
+                if pdf_bytes:
+                    st.download_button("📥 PDF", pdf_bytes, file_name=f"{fname_base}.pdf", mime="application/pdf", key="export_pdf")
+                else:
+                    st.caption("PDF 导出不可用")
 
     # 未分析客户：直接显示原始邮件
     if not has_profile and total_count > 0:
