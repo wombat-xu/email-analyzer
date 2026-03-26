@@ -1477,7 +1477,7 @@ def show_customer_detail():
             with ecol2:
                 pdf_bytes = _build_report_pdf(profile, email_addr, earliest_fmt, latest_fmt, total_count, profile_row)
                 if pdf_bytes:
-                    st.download_button("📥 PDF", pdf_bytes, file_name=f"{fname_base}.pdf", mime="application/pdf", key="export_pdf")
+                    st.download_button("📥 PDF", bytes(pdf_bytes), file_name=f"{fname_base}.pdf", mime="application/pdf", key="export_pdf")
                 else:
                     st.caption("PDF 导出不可用")
 
