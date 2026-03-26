@@ -1096,33 +1096,27 @@ def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profil
         pdf.add_font("cn", "", font_path)
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
+        W = pdf.epw  # 有效页宽
+
+        def mc(text, size=9, h=5, align="L"):
+            pdf.set_font("cn", size=size)
+            pdf.multi_cell(W, h, str(text), align=align, new_x="LMARGIN", new_y="NEXT")
 
         # 标题
-        pdf.set_font("cn", size=16)
-        pdf.cell(0, 10, f"客户分析报告 - {email_addr}", align="C", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_font("cn", size=9)
-        pdf.cell(0, 6, f"基于 {earliest} 至 {latest} 的 {total_count:,} 封邮件 | 分析时间: {(profile_row[1] or '')[:19]}", align="C", new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(6)
+        mc(f"客户分析报告 - {email_addr}", size=16, h=10, align="C")
+        mc(f"基于 {earliest} 至 {latest} 的 {total_count:,} 封邮件 | 分析时间: {(profile_row[1] or '')[:19]}", size=9, h=6, align="C")
+        pdf.ln(4)
 
         def section(title):
-            pdf.set_font("cn", size=13)
-            pdf.set_fill_color(33, 150, 243)
-            pdf.set_text_color(255, 255, 255)
-            pdf.cell(0, 8, f"  {title}", fill=True, new_x="LMARGIN", new_y="NEXT")
-            pdf.set_text_color(0, 0, 0)
-            pdf.ln(2)
+            pdf.ln(4)
+            mc(f"■ {title}", size=13, h=8)
+            pdf.ln(1)
 
         def kv(key, val):
             label = LABELS.get(key, key)
             if not val or val == '未知':
                 return
-            pdf.set_font("cn", size=10)
-            pdf.cell(50, 6, f"{label}: ")
-            pdf.multi_cell(0, 6, str(val)[:300])
-
-        def text(content):
-            pdf.set_font("cn", size=10)
-            pdf.multi_cell(0, 6, str(content)[:500])
+            mc(f"【{label}】{str(val)[:600]}", size=9)
             pdf.ln(1)
 
         basic = profile.get('basic_info', {})
@@ -1133,7 +1127,7 @@ def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profil
         products = profile.get('products_of_interest', [])
         if products:
             section("感兴趣的产品")
-            text(", ".join(products))
+            mc(", ".join(products))
 
         behavior = profile.get('behavior_profile', {})
         if behavior:
@@ -1150,41 +1144,41 @@ def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profil
         strat = profile.get('strategy_recommendation', {})
         if strat:
             section("应对策略")
-            text(strat.get('approach', ''))
-            pdf.set_font("cn", size=10)
-            pdf.cell(0, 6, "应该做:", new_x="LMARGIN", new_y="NEXT")
+            mc(strat.get('approach', ''))
+            mc("应该做:", size=10, h=6)
             for item in strat.get('dos', []):
-                pdf.multi_cell(0, 6, f"  · {item}")
-            pdf.cell(0, 6, "不应该做:", new_x="LMARGIN", new_y="NEXT")
+                mc(f"  · {item}")
+            mc("不应该做:", size=10, h=6)
             for item in strat.get('donts', []):
-                pdf.multi_cell(0, 6, f"  · {item}")
-            pdf.cell(0, 6, "建议下一步:", new_x="LMARGIN", new_y="NEXT")
+                mc(f"  · {item}")
+            mc("建议下一步:", size=10, h=6)
             for item in strat.get('next_steps', []):
-                pdf.multi_cell(0, 6, f"  · {item}")
+                mc(f"  · {item}")
 
         opps = profile.get('opportunities', [])
         if opps:
             section("商机")
             for opp in opps:
-                text(f"[{opp.get('priority','')}] {opp.get('type','')}: {opp.get('description','')}")
+                mc(f"[{opp.get('priority','')}] {opp.get('type','')}: {opp.get('description','')}")
 
         convos = profile.get('key_conversations', [])
         if convos:
             section("关键对话复盘")
             for convo in convos:
-                pdf.set_font("cn", size=11)
-                pdf.multi_cell(0, 6, f"{convo.get('topic', '')} ({convo.get('date', '')})")
-                pdf.set_font("cn", size=9)
-                pdf.multi_cell(0, 5, f"概况: {convo.get('summary', '')}")
-                pdf.multi_cell(0, 5, f"结果: {convo.get('outcome', '')}")
+                topic = convo.get('topic', '') or '对话'
+                mc(f"● {topic} ({convo.get('date', '')})", size=10, h=6)
+                if convo.get('summary'):
+                    mc(f"  概况: {convo['summary']}")
+                if convo.get('outcome'):
+                    mc(f"  结果: {convo['outcome']}")
                 for rnd in convo.get('negotiation_rounds', []):
                     if rnd.get('customer_said'):
-                        pdf.multi_cell(0, 5, f"  客户: {rnd['customer_said'][:300]}")
+                        mc(f"  [客户] {rnd['customer_said'][:300]}")
                     if rnd.get('our_response'):
-                        pdf.multi_cell(0, 5, f"  我方: {rnd['our_response'][:300]}")
+                        mc(f"  [我方] {rnd['our_response'][:300]}")
                     if rnd.get('highlight'):
-                        pdf.multi_cell(0, 5, f"  要点: {rnd['highlight']}")
-                pdf.ln(3)
+                        mc(f"  [要点] {rnd['highlight']}")
+                pdf.ln(2)
 
         return pdf.output()
     except Exception as e:

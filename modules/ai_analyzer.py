@@ -86,7 +86,7 @@ def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, em
     def _card(title, content, color='#1976D2'):
         return (f'<div style="margin:16px 0">'
                 f'<div style="background:{color};color:white;padding:8px 16px;border-radius:8px 8px 0 0;font-size:16px;font-weight:bold">{title}</div>'
-                f'<div style="border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;padding:12px 16px">{content}</div></div>')
+                f'<div style="border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;padding:12px 16px;color:#333;background:#fafafa">{content}</div></div>')
 
     def _kv_rows(data, labels):
         rows = ''
@@ -160,10 +160,12 @@ def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, em
     if convos:
         c = ''
         for convo in convos:
-            c += (f'<details style="margin-bottom:10px;border:1px solid #e0e0e0;border-radius:6px">'
-                  f'<summary style="cursor:pointer;padding:10px 14px;background:#fafafa;font-weight:bold;border-radius:6px">'
-                  f'📌 {convo.get("topic","")} ({convo.get("date","")})</summary>'
-                  f'<div style="padding:10px 14px">')
+            topic = convo.get("topic", "") or "对话"
+            date = convo.get("date", "")
+            c += (f'<details style="margin-bottom:10px;border:1px solid #ccc;border-radius:6px">'
+                  f'<summary style="cursor:pointer;padding:10px 14px;background:#f0f0f0;color:#333;font-weight:bold;border-radius:6px">'
+                  f'📌 {topic} ({date})</summary>'
+                  f'<div style="padding:10px 14px;color:#333">')
             c += f'<p><b>概况</b>：{convo.get("summary","")}</p>'
             c += f'<p><b>结果</b>：{convo.get("outcome","")}</p>'
             for rnd in convo.get('negotiation_rounds', []):
