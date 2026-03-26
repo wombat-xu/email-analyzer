@@ -822,6 +822,34 @@ def get_recent_tasks(limit=10):
     return tasks
 
 
+def delete_old_tasks(keep=20):
+    """清理历史任务，只保留最近 keep 条"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM tasks")
+    total = cursor.fetchone()[0]
+    if total <= keep:
+        conn.close()
+        return 0
+    cursor.execute(f"DELETE FROM tasks WHERE id NOT IN (SELECT id FROM tasks ORDER BY id DESC LIMIT ?)", (keep,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def cancel_task(task_id):
+    """取消运行中的任务"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE tasks SET status='cancelled', result='用户手动取消', finished_at=? WHERE id=? AND status='running'",
+                   (datetime.now().isoformat(), task_id))
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+
 def get_sync_status():
     """获取所有账号的同步状态"""
     conn = sqlite3.connect(DB_PATH)

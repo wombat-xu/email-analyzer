@@ -296,6 +296,29 @@ def show_account_management():
                 process_all()
             st.success("邮件解析完成！")
 
+    # 任务管理
+    st.divider()
+    st.subheader("📋 任务管理")
+    from modules.email_fetcher import get_recent_tasks as _get_recent, delete_old_tasks
+    all_tasks = _get_recent(30)
+    if all_tasks:
+        task_data = []
+        for t in all_tasks:
+            icon = {"done": "✅", "failed": "❌", "running": "🔄", "cancelled": "⏹️"}.get(t[3], "❓")
+            task_data.append({
+                "ID": t[0], "状态": f"{icon} {t[3]}", "类型": t[1],
+                "描述": t[2], "结果": (t[7] or "")[:60],
+                "创建时间": (t[8] or "")[:19], "完成时间": (t[9] or "")[:19]
+            })
+        st.dataframe(pd.DataFrame(task_data), use_container_width=True, height=300)
+        st.caption(f"共 {len(all_tasks)} 条记录")
+        if st.button("🗑️ 清理历史任务（保留最近20条）", key="clean_tasks_mgmt"):
+            deleted = delete_old_tasks(keep=20)
+            st.success(f"已清理 {deleted} 条历史任务")
+            st.rerun()
+    else:
+        st.info("暂无任务记录")
+
     # AI 配置管理
     st.divider()
     st.subheader("🤖 AI 配置管理")
@@ -666,27 +689,51 @@ def show_top_customers():
     mcol3.metric("待分析", f"{pending_count}")
 
     # === 后台任务状态 ===
-    from modules.email_fetcher import get_running_tasks, get_recent_tasks
+    from modules.email_fetcher import get_running_tasks, get_recent_tasks, cancel_task, delete_old_tasks
     running = get_running_tasks()
     if running:
-        t = running[-1]
-        task_id, task_type, desc, cur, total, text, created = t
-        st.markdown("#### 🔄 正在进行的后台任务")
-        st.markdown(f"**{desc}**")
-        if total > 0:
-            st.progress(min(cur / total, 1.0), text=text or f"{cur}/{total}")
-        else:
-            st.info(text or "进行中...")
-        if st.button("🔄 刷新任务进度"):
-            st.rerun()
+        for t in running:
+            task_id, task_type, desc, cur, total, text, created = t
+            st.markdown("#### 🔄 正在进行的后台任务")
+            # 计算耗时
+            elapsed = ""
+            if created:
+                try:
+                    from datetime import datetime as dt
+                    start = dt.fromisoformat(created)
+                    mins = int((dt.now() - start).total_seconds() // 60)
+                    elapsed = f"（已运行 {mins} 分钟）"
+                except Exception:
+                    pass
+            st.markdown(f"**{desc}** {elapsed}")
+            if total > 0:
+                st.progress(min(cur / total, 1.0), text=text or f"{cur}/{total}")
+            else:
+                st.info(text or "进行中...")
+            tcol1, tcol2 = st.columns([1, 5])
+            with tcol1:
+                if st.button("🔄 刷新", key=f"refresh_{task_id}"):
+                    st.rerun()
+            with tcol2:
+                if st.button("⏹️ 取消任务", key=f"cancel_{task_id}"):
+                    cancel_task(task_id)
+                    st.warning("已取消任务")
+                    st.rerun()
         st.divider()
 
-    recent = get_recent_tasks(5)
-    done_tasks = [t for t in recent if t[3] == 'done']
-    if done_tasks:
-        with st.expander(f"✅ 最近完成的任务（{len(done_tasks)} 个）", expanded=False):
-            for t in done_tasks:
-                st.markdown(f"- **{t[2]}** — {t[7] or '完成'} （{(t[9] or '')[:19]}）")
+    recent = get_recent_tasks(10)
+    done_tasks = [t for t in recent if t[3] in ('done', 'failed', 'cancelled')]
+    # 只显示有意义的任务（排除僵尸清理的）
+    meaningful = [t for t in done_tasks if t[7] and '进程异常退出' not in (t[7] or '')]
+    if meaningful:
+        with st.expander(f"📋 最近任务记录（{len(meaningful)} 个）", expanded=False):
+            for t in meaningful:
+                icon = "✅" if t[3] == 'done' else ("❌" if t[3] == 'failed' else "⏹️")
+                st.markdown(f"- {icon} **{t[2]}** — {t[7] or ''} （{(t[9] or '')[:19]}）")
+            if st.button("🗑️ 清理历史任务（保留最近20条）", key="clean_tasks"):
+                deleted = delete_old_tasks(keep=20)
+                st.success(f"已清理 {deleted} 条历史任务")
+                st.rerun()
         st.divider()
 
     # === 一键批量分析 ===
@@ -697,19 +744,19 @@ def show_top_customers():
     with bcol1:
         batch_size = st.selectbox("分析数量", [10, 20, 50], key="batch_size")
     with bcol2:
-        if st.button(f"🚀 批量分析 TOP {batch_size} 待分析客户", type="primary", key="btn_batch"):
-            if not running:
-                import subprocess
-                project_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-                log_file = os.path.join(project_dir, 'data', 'worker.log')
-                cmd = [sys.executable, os.path.join(project_dir, 'modules', 'batch_analyzer.py'), '--limit', str(batch_size)]
-                subprocess.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=subprocess.STDOUT, start_new_session=True)
-                st.success(f"✅ 已启动批量分析任务！将依次分析 TOP {batch_size} 未分析客户")
-                st.info("任务在后台运行，刷新页面查看进度。每个客户约 1-2 分钟。")
-                time.sleep(1)
-                st.rerun()
-            else:
-                st.warning("已有任务在运行中，请等待完成后再提交")
+        has_running = bool(running)
+        if st.button(f"🚀 批量分析 TOP {batch_size} 待分析客户", type="primary", key="btn_batch", disabled=has_running):
+            import subprocess
+            project_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+            log_file = os.path.join(project_dir, 'data', 'worker.log')
+            cmd = [sys.executable, os.path.join(project_dir, 'modules', 'batch_analyzer.py'), '--limit', str(batch_size)]
+            subprocess.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=subprocess.STDOUT, start_new_session=True)
+            st.success(f"✅ 已启动批量分析任务！将依次分析 TOP {batch_size} 未分析客户")
+            st.info("任务在后台运行，刷新页面查看进度。每个客户约 1-2 分钟。")
+            time.sleep(1)
+            st.rerun()
+        if has_running:
+            st.caption("有任务在运行中，请等待完成后再提交")
 
     st.divider()
 
