@@ -1017,37 +1017,122 @@ def show_customer_list():
 
 
 def show_customer_detail():
-    """客户详情 - 包含原始邮件内容和翻译"""
+    """客户详情 - 支持搜索所有客户，含数据来源说明"""
     conn = get_db()
     cursor = conn.cursor()
 
     st.subheader("🔍 客户详情")
 
-    cursor.execute('''
-        SELECT customer_email, customer_name, company_name, country
-        FROM customer_profiles ORDER BY customer_email
-    ''')
-    profiles = cursor.fetchall()
+    # === 搜索框 ===
+    search = st.text_input("搜索客户（邮箱/姓名/公司/域名）", "", key="detail_search", placeholder="输入关键词搜索...")
 
-    if not profiles:
-        st.warning("还没有分析过任何客户，请先到「TOP客户」页面选择分析。")
+    if not search:
+        # 默认显示已分析客户列表
+        cursor.execute('''
+            SELECT customer_email, customer_name, company_name, country
+            FROM customer_profiles ORDER BY customer_email
+        ''')
+        profiles = cursor.fetchall()
+        if profiles:
+            options = [f"{p[0]} ({p[1] or ''} - {p[2] or ''})" for p in profiles]
+            selected = st.selectbox("或从已分析客户中选择", options)
+            email_addr = selected.split(" (")[0] if selected else None
+        else:
+            st.info("还没有分析过任何客户。请输入邮箱搜索，或到「TOP客户」页面批量分析。")
+            conn.close()
+            return
+    else:
+        kw = f"%{search}%"
+        cursor.execute("""
+            SELECT c.email, c.name, c.domain, c.email_count,
+                   CASE WHEN cp.id IS NOT NULL THEN '✅ 已分析' ELSE '⏳ 待分析' END as status,
+                   cp.company_name
+            FROM customers c
+            LEFT JOIN customer_profiles cp ON c.email = cp.customer_email
+            WHERE c.is_internal = 0
+              AND (c.email LIKE ? OR c.name LIKE ? OR c.domain LIKE ? OR cp.company_name LIKE ?)
+            ORDER BY c.email_count DESC LIMIT 20
+        """, (kw, kw, kw, kw))
+        results = cursor.fetchall()
+        if not results:
+            st.warning(f"未找到与「{search}」相关的客户")
+            conn.close()
+            return
+        options = [f"{r[0]} ({r[1] or r[2]}) - {r[3]}封 {r[4]}" for r in results]
+        selected = st.selectbox("选择客户", options)
+        email_addr = selected.split(" (")[0] if selected else None
+
+    if not email_addr:
         conn.close()
         return
 
-    options = [f"{p[0]} ({p[1] or ''} - {p[2] or ''})" for p in profiles]
-    selected = st.selectbox("选择客户", options)
+    # === 数据来源说明 ===
+    # 总体统计
+    cursor.execute("""
+        SELECT COUNT(*), MIN(date), MAX(date)
+        FROM emails WHERE from_addr LIKE ? OR to_addr LIKE ?
+    """, (f"%{email_addr}%", f"%{email_addr}%"))
+    total_count, earliest, latest = cursor.fetchone()
 
-    if selected:
-        email_addr = selected.split(" (")[0]
-        cursor.execute('SELECT profile_json FROM customer_profiles WHERE customer_email = ?', (email_addr,))
-        row = cursor.fetchone()
+    # 按公司邮箱拆分统计
+    cursor.execute("SELECT DISTINCT account FROM emails ORDER BY account")
+    accounts = [r[0] for r in cursor.fetchall()]
 
-        if row:
-            profile = json.loads(row[0])
+    # 检查是否已分析
+    cursor.execute('SELECT profile_json, analyzed_at, thread_count, email_count FROM customer_profiles WHERE customer_email = ?', (email_addr,))
+    profile_row = cursor.fetchone()
+    has_profile = profile_row is not None
 
+    st.divider()
+
+    # 数据来源信息
+    if total_count > 0:
+        earliest_fmt = format_date(earliest) if earliest else "未知"
+        latest_fmt = format_date(latest) if latest else "未知"
+        if has_profile:
+            analyzed_at = (profile_row[1] or '')[:19]
+            st.markdown(f"### 📊 基于 **{earliest_fmt}** 至 **{latest_fmt}** 的 **{total_count:,}** 封邮件分析所得")
+            st.caption(f"分析时间：{analyzed_at}　|　分析线程数：{profile_row[2]}　|　分析邮件数：{profile_row[3]}")
+        else:
+            st.markdown(f"### 📊 共有 **{total_count:,}** 封相关邮件（{earliest_fmt} ~ {latest_fmt}）")
+            st.caption("该客户尚未进行 AI 分析")
+
+        # 按邮箱账号拆分
+        account_stats = []
+        for acc in accounts:
+            cursor.execute("""
+                SELECT COUNT(*), MIN(date), MAX(date) FROM emails
+                WHERE account = ? AND (from_addr LIKE ? OR to_addr LIKE ?)
+            """, (acc, f"%{email_addr}%", f"%{email_addr}%"))
+            cnt, acc_min, acc_max = cursor.fetchone()
+            if cnt > 0:
+                account_stats.append({
+                    "公司邮箱": acc,
+                    "邮件数": cnt,
+                    "最早邮件": format_date(acc_min) if acc_min else "-",
+                    "最晚邮件": format_date(acc_max) if acc_max else "-",
+                })
+        if account_stats:
+            st.dataframe(pd.DataFrame(account_stats), use_container_width=True, hide_index=True)
+    else:
+        st.warning("本地数据库中没有该客户的邮件")
+
+    # === 分析/重新分析按钮 ===
+    if not has_profile:
+        if st.button("🚀 立即分析此客户", type="primary", key="analyze_now"):
+            launch_background_task([email_addr])
+            st.success("已提交分析任务！刷新页面查看进度。")
+            st.rerun()
+    else:
+        # 已分析 — 用 tabs 展示
+        profile = json.loads(profile_row[0])
+
+        tab1, tab2, tab3 = st.tabs(["📋 客户概览", "🎯 关键对话复盘", "📮 原始邮件"])
+
+        with tab1:
             # 基本信息
             basic = profile.get('basic_info', {})
-            st.markdown("### 基本信息")
+            st.markdown("#### 基本信息")
             col1, col2, col3 = st.columns(3)
             col1.write(f"**姓名**: {basic.get('name', '未知')}")
             col1.write(f"**公司**: {basic.get('company', '未知')}")
@@ -1059,12 +1144,12 @@ def show_customer_detail():
             # 感兴趣的产品
             products = profile.get('products_of_interest', [])
             if products:
-                st.markdown("### 感兴趣的产品")
+                st.markdown("#### 感兴趣的产品")
                 st.write(", ".join(products))
 
             # 行为画像
             behavior = profile.get('behavior_profile', {})
-            st.markdown("### 行为画像")
+            st.markdown("#### 行为画像")
             col1, col2 = st.columns(2)
             with col1:
                 st.write(f"**价格敏感度**: {behavior.get('price_sensitivity', '未知')}")
@@ -1080,33 +1165,56 @@ def show_customer_detail():
 
             # 关系状态
             rel = profile.get('relationship_status', {})
-            st.markdown("### 关系状态")
+            st.markdown("#### 关系状态")
             col1, col2 = st.columns(2)
             col1.write(f"**当前状态**: {rel.get('current_status', '未知')}")
             col1.write(f"**关系质量**: {rel.get('relationship_quality', '未知')}")
             col2.write(f"**最后联系**: {rel.get('last_contact_date', '未知')}")
             col2.write(f"**信任度**: {rel.get('trust_level', '未知')}")
 
-            # 关键对话 - 双方博弈视角
+            # 策略建议
+            strat = profile.get('strategy_recommendation', {})
+            if strat:
+                st.markdown("#### 应对策略")
+                st.info(strat.get('approach', ''))
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**✅ 应该做的：**")
+                    for item in strat.get('dos', []):
+                        st.write(f"- {item}")
+                with col2:
+                    st.markdown("**❌ 不应该做的：**")
+                    for item in strat.get('donts', []):
+                        st.write(f"- {item}")
+                st.markdown("**📋 建议下一步：**")
+                for item in strat.get('next_steps', []):
+                    st.write(f"- {item}")
+
+            # 商机
+            opps = profile.get('opportunities', [])
+            if opps:
+                st.markdown("#### 商机")
+                for opp in opps:
+                    priority_color = {"高": "🔴", "中": "🟡", "低": "🟢"}.get(opp.get('priority', ''), '⚪')
+                    st.write(f"{priority_color} **[{opp.get('type', '')}]** {opp.get('description', '')} (优先级: {opp.get('priority', '')})")
+
+        with tab2:
             convos = profile.get('key_conversations', [])
             if convos:
-                st.markdown("### 🎯 关键对话复盘")
                 st.caption("展示客户与业务员之间的核心博弈过程，帮助学习谈判技巧")
                 for convo in convos:
                     with st.expander(f"📌 {convo.get('topic', '对话')} ({convo.get('date', '')})", expanded=False):
                         st.markdown(f"**📋 概况**: {convo.get('summary', '')}")
                         st.markdown(f"**🏁 结果**: {convo.get('outcome', '')}")
 
-                        # 博弈回合展示
                         rounds = convo.get('negotiation_rounds', [])
                         if rounds:
                             st.markdown("---")
                             st.markdown("**⚔️ 交锋过程：**")
                             for rnd in rounds:
                                 round_num = rnd.get('round', '')
-                                st.markdown(f"#### 第 {round_num} 轮")
+                                st.markdown(f"##### 第 {round_num} 轮")
 
-                                # 客户邮件
                                 customer_said = rnd.get('customer_said', '')
                                 customer_cn = rnd.get('customer_said_cn', '')
                                 c_from = rnd.get('customer_from', '')
@@ -1122,18 +1230,13 @@ def show_customer_detail():
                                     st.markdown(
                                         f'<div style="background:#e8f4fd;padding:12px 16px;border-left:4px solid #2196F3;'
                                         f'border-radius:4px;margin:4px 0 8px 0;font-size:14px;line-height:1.7;white-space:pre-wrap">'
-                                        f'{customer_said}</div>',
-                                        unsafe_allow_html=True
-                                    )
+                                        f'{customer_said}</div>', unsafe_allow_html=True)
                                     if customer_cn:
                                         st.markdown(
                                             f'<div style="background:#f5f5f5;padding:10px 16px;border-radius:4px;'
                                             f'margin:0 0 12px 0;font-size:13px;color:#555;line-height:1.6">'
-                                            f'💬 {customer_cn}</div>',
-                                            unsafe_allow_html=True
-                                        )
+                                            f'💬 {customer_cn}</div>', unsafe_allow_html=True)
 
-                                # 我方回复
                                 our_resp = rnd.get('our_response', '')
                                 our_cn = rnd.get('our_response_cn', '')
                                 o_from = rnd.get('our_from', '')
@@ -1149,94 +1252,104 @@ def show_customer_detail():
                                     st.markdown(
                                         f'<div style="background:#e8f5e9;padding:12px 16px;border-left:4px solid #4CAF50;'
                                         f'border-radius:4px;margin:4px 0 8px 0;font-size:14px;line-height:1.7;white-space:pre-wrap">'
-                                        f'{our_resp}</div>',
-                                        unsafe_allow_html=True
-                                    )
+                                        f'{our_resp}</div>', unsafe_allow_html=True)
                                     if our_cn:
                                         st.markdown(
                                             f'<div style="background:#f5f5f5;padding:10px 16px;border-radius:4px;'
                                             f'margin:0 0 12px 0;font-size:13px;color:#555;line-height:1.6">'
-                                            f'💬 {our_cn}</div>',
-                                            unsafe_allow_html=True
-                                        )
+                                            f'💬 {our_cn}</div>', unsafe_allow_html=True)
 
-                                # 高光要点
                                 highlight = rnd.get('highlight', '')
                                 if highlight:
                                     st.success(f"💡 **要点**: {highlight}")
-
                                 st.markdown("---")
 
-                        # 兼容旧格式（original_excerpt）
                         elif convo.get('original_excerpt'):
                             st.markdown("---")
                             st.markdown(
                                 f'<div style="background:#fff3e0;padding:12px 16px;border-left:4px solid #FF9800;'
                                 f'border-radius:4px;font-size:14px;line-height:1.7;white-space:pre-wrap">'
-                                f'{convo["original_excerpt"]}</div>',
-                                unsafe_allow_html=True
-                            )
+                                f'{convo["original_excerpt"]}</div>', unsafe_allow_html=True)
                             if convo.get('translation'):
                                 st.markdown(
                                     f'<div style="background:#f5f5f5;padding:10px 16px;border-radius:4px;'
                                     f'margin:4px 0;font-size:13px;color:#555;line-height:1.6">'
-                                    f'💬 {convo["translation"]}</div>',
-                                    unsafe_allow_html=True
-                                )
+                                    f'💬 {convo["translation"]}</div>', unsafe_allow_html=True)
 
-                        # 经验总结
                         lesson = convo.get('lesson_learned', '')
                         if lesson:
                             st.info(f"📚 **经验总结**: {lesson}")
+            else:
+                st.info("AI 分析中未提取到关键对话")
 
-            # 策略建议
-            strat = profile.get('strategy_recommendation', {})
-            if strat:
-                st.markdown("### 应对策略")
-                st.info(strat.get('approach', ''))
+        with tab3:
+            _show_customer_emails(conn, email_addr)
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**✅ 应该做的：**")
-                    for item in strat.get('dos', []):
-                        st.write(f"- {item}")
-                with col2:
-                    st.markdown("**❌ 不应该做的：**")
-                    for item in strat.get('donts', []):
-                        st.write(f"- {item}")
+        # 底部：重新分析按钮
+        st.divider()
+        if st.button("🔄 重新分析此客户", key="re_analyze"):
+            launch_background_task([email_addr])
+            st.success("已提交重新分析任务！")
+            st.rerun()
 
-                st.markdown("**📋 建议下一步：**")
-                for item in strat.get('next_steps', []):
-                    st.write(f"- {item}")
-
-            # 商机
-            opps = profile.get('opportunities', [])
-            if opps:
-                st.markdown("### 商机")
-                for opp in opps:
-                    priority_color = {"高": "🔴", "中": "🟡", "低": "🟢"}.get(opp.get('priority', ''), '⚪')
-                    st.write(f"{priority_color} **[{opp.get('type', '')}]** {opp.get('description', '')} (优先级: {opp.get('priority', '')})")
-
-            # 原始邮件记录
-            st.divider()
-            st.markdown("### 📬 原始邮件记录")
-            threads = get_customer_threads(conn, email_addr)
-            if threads:
-                for thread in threads[:20]:
-                    with st.expander(f"📨 {thread['subject']} ({thread['email_count']}封, {(thread['first_date'] or '')[:10]} ~ {(thread['last_date'] or '')[:10]})"):
-                        for em in thread['emails']:
-                            body = get_email_text(em.get('body', ''), '')
-                            if not body and 'body' not in em:
-                                body = ''
-                            st.markdown(f"**[{(em['date'] or '')[:19]}]** `{em['from']}` → `{em['to']}`")
-                            st.markdown(f"**主题**: {em['subject']}")
-                            if body:
-                                st.text_area("邮件内容", body[:3000], height=150,
-                                             key=f"email_{thread['thread_id']}_{em['date']}_{em['from']}",
-                                             disabled=True)
-                            st.markdown("---")
+    # 未分析客户：直接显示原始邮件
+    if not has_profile and total_count > 0:
+        st.divider()
+        st.markdown("### 📮 原始邮件")
+        _show_customer_emails(conn, email_addr)
 
     conn.close()
+
+
+def _show_customer_emails(conn, email_addr):
+    """显示客户的原始邮件线程（带分页，区分方向）"""
+    threads = get_customer_threads(conn, email_addr)
+    if not threads:
+        st.info("没有找到相关邮件线程")
+        return
+
+    # 分页
+    page_size = 10
+    total_threads = len(threads)
+    total_pages = max(1, (total_threads + page_size - 1) // page_size)
+    if 'detail_email_page' not in st.session_state:
+        st.session_state.detail_email_page = 1
+    current_page = st.session_state.detail_email_page
+
+    pcol1, pcol2, pcol3 = st.columns([1, 1, 3])
+    with pcol1:
+        if st.button("上一页", disabled=(current_page <= 1), key="detail_prev"):
+            st.session_state.detail_email_page -= 1
+            st.rerun()
+    with pcol2:
+        if st.button("下一页", disabled=(current_page >= total_pages), key="detail_next"):
+            st.session_state.detail_email_page += 1
+            st.rerun()
+    with pcol3:
+        st.caption(f"第 {current_page}/{total_pages} 页，共 {total_threads} 个对话线程")
+
+    start = (current_page - 1) * page_size
+    for thread in threads[start:start + page_size]:
+        with st.expander(f"📨 {thread['subject']} ({thread['email_count']}封, {(thread['first_date'] or '')[:10]} ~ {(thread['last_date'] or '')[:10]})"):
+            for em in thread['emails']:
+                from_addr = em.get('from', '')
+                is_outgoing = 'meinuo.com' in from_addr.lower()
+                icon = "🟢" if is_outgoing else "🔵"
+                direction = "发出" if is_outgoing else "收到"
+                color = "#e8f5e9" if is_outgoing else "#e8f4fd"
+                border = "#4CAF50" if is_outgoing else "#2196F3"
+
+                st.markdown(f"{icon} **{direction}** [{(em['date'] or '')[:19]}]　`{from_addr}` → `{em.get('to', '')}`")
+                st.markdown(f"**主题**: {em['subject']}")
+
+                body = get_email_text(em.get('body', ''), '')
+                if body:
+                    st.markdown(
+                        f'<div style="background:{color};padding:10px 14px;border-left:4px solid {border};'
+                        f'border-radius:4px;font-size:13px;line-height:1.6;white-space:pre-wrap;'
+                        f'max-height:400px;overflow-y:auto">{body[:3000]}</div>',
+                        unsafe_allow_html=True)
+                st.markdown("---")
 
 
 def show_opportunities():
