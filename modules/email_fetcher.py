@@ -103,6 +103,11 @@ def init_database():
             value TEXT
         )
     ''')
+    # 给 customer_profiles 加 report_html 字段（已有表安全添加）
+    try:
+        cursor.execute('ALTER TABLE customer_profiles ADD COLUMN report_html TEXT')
+    except Exception:
+        pass  # 字段已存在
     conn.commit()
     return conn
 

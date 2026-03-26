@@ -1274,10 +1274,11 @@ def show_customer_detail():
     cursor.execute("SELECT DISTINCT account FROM emails ORDER BY account")
     accounts_list = [r[0] for r in cursor.fetchall()]
 
-    # 检查是否已分析
-    cursor.execute('SELECT profile_json, analyzed_at, thread_count, email_count FROM customer_profiles WHERE customer_email = ?', (email_addr,))
+    # 检查是否已分析（含 HTML 缓存）
+    cursor.execute('SELECT profile_json, analyzed_at, thread_count, email_count, report_html FROM customer_profiles WHERE customer_email = ?', (email_addr,))
     profile_row = cursor.fetchone()
     has_profile = profile_row is not None
+    has_html_cache = has_profile and profile_row[4]  # report_html 字段
 
     st.divider()
 
@@ -1397,166 +1398,32 @@ def show_customer_detail():
             st.success("已提交分析任务！刷新页面查看进度。")
             st.rerun()
     else:
-        # 已分析 — 用 tabs 展示
+        # 已分析
         profile = json.loads(profile_row[0])
 
-        tab1, tab2, tab3 = st.tabs(["📋 客户概览", "🎯 关键对话复盘", "📮 原始邮件"])
-
-        with tab1:
-            # 基本信息
-            basic = profile.get('basic_info', {})
-            st.markdown("#### 基本信息")
-            col1, col2, col3 = st.columns(3)
-            col1.write(f"**姓名**: {basic.get('name', '未知')}")
-            col1.write(f"**公司**: {basic.get('company', '未知')}")
-            col2.write(f"**国家**: {basic.get('country', '未知')}")
-            col2.write(f"**职位**: {basic.get('position', '未知')}")
-            col3.write(f"**公司类型**: {basic.get('company_type', '未知')}")
-            col3.write(f"**公司规模**: {basic.get('company_scale', '未知')}")
-
-            # 感兴趣的产品
-            products = profile.get('products_of_interest', [])
-            if products:
-                st.markdown("#### 感兴趣的产品")
-                st.write(", ".join(products))
-
-            # 行为画像
-            behavior = profile.get('behavior_profile', {})
-            st.markdown("#### 行为画像")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**价格敏感度**: {behavior.get('price_sensitivity', '未知')}")
-                st.caption(behavior.get('price_sensitivity_evidence', ''))
-                st.write(f"**决策模式**: {behavior.get('decision_pattern', '未知')}")
-                st.caption(behavior.get('decision_evidence', ''))
-                st.write(f"**付款方式**: {behavior.get('payment_preference', '未知')}")
-            with col2:
-                st.write(f"**沟通风格**: {behavior.get('communication_style', '未知')}")
-                st.write(f"**回复速度**: {behavior.get('response_speed', '未知')}")
-                st.write(f"**下单频率**: {behavior.get('order_frequency', '未知')}")
-                st.write(f"**平均订单金额**: {behavior.get('average_order_value', '未知')}")
-
-            # 关系状态
-            rel = profile.get('relationship_status', {})
-            st.markdown("#### 关系状态")
-            col1, col2 = st.columns(2)
-            col1.write(f"**当前状态**: {rel.get('current_status', '未知')}")
-            col1.write(f"**关系质量**: {rel.get('relationship_quality', '未知')}")
-            col2.write(f"**最后联系**: {rel.get('last_contact_date', '未知')}")
-            col2.write(f"**信任度**: {rel.get('trust_level', '未知')}")
-
-            # 策略建议
-            strat = profile.get('strategy_recommendation', {})
-            if strat:
-                st.markdown("#### 应对策略")
-                st.info(strat.get('approach', ''))
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**✅ 应该做的：**")
-                    for item in strat.get('dos', []):
-                        st.write(f"- {item}")
-                with col2:
-                    st.markdown("**❌ 不应该做的：**")
-                    for item in strat.get('donts', []):
-                        st.write(f"- {item}")
-                st.markdown("**📋 建议下一步：**")
-                for item in strat.get('next_steps', []):
-                    st.write(f"- {item}")
-
-            # 商机
-            opps = profile.get('opportunities', [])
-            if opps:
-                st.markdown("#### 商机")
-                for opp in opps:
-                    priority_color = {"高": "🔴", "中": "🟡", "低": "🟢"}.get(opp.get('priority', ''), '⚪')
-                    st.write(f"{priority_color} **[{opp.get('type', '')}]** {opp.get('description', '')} (优先级: {opp.get('priority', '')})")
-
-        with tab2:
-            convos = profile.get('key_conversations', [])
-            if convos:
-                st.caption("展示客户与业务员之间的核心博弈过程，帮助学习谈判技巧")
-                for convo in convos:
-                    with st.expander(f"📌 {convo.get('topic', '对话')} ({convo.get('date', '')})", expanded=False):
-                        st.markdown(f"**📋 概况**: {convo.get('summary', '')}")
-                        st.markdown(f"**🏁 结果**: {convo.get('outcome', '')}")
-
-                        rounds = convo.get('negotiation_rounds', [])
-                        if rounds:
-                            st.markdown("---")
-                            st.markdown("**⚔️ 交锋过程：**")
-                            for rnd in rounds:
-                                round_num = rnd.get('round', '')
-                                st.markdown(f"##### 第 {round_num} 轮")
-
-                                customer_said = rnd.get('customer_said', '')
-                                customer_cn = rnd.get('customer_said_cn', '')
-                                c_from = rnd.get('customer_from', '')
-                                c_to = rnd.get('customer_to', '')
-                                c_date = rnd.get('customer_date', '')
-                                if customer_said:
-                                    header = f"🔵 **客户**"
-                                    if c_from or c_to:
-                                        header += f"　`{c_from}` → `{c_to}`"
-                                    if c_date:
-                                        header += f"　_{c_date}_"
-                                    st.markdown(header)
-                                    st.markdown(
-                                        f'<div style="background:#e8f4fd;padding:12px 16px;border-left:4px solid #2196F3;'
-                                        f'border-radius:4px;margin:4px 0 8px 0;font-size:14px;line-height:1.7;white-space:pre-wrap">'
-                                        f'{customer_said}</div>', unsafe_allow_html=True)
-                                    if customer_cn:
-                                        st.markdown(
-                                            f'<div style="background:#f5f5f5;padding:10px 16px;border-radius:4px;'
-                                            f'margin:0 0 12px 0;font-size:13px;color:#555;line-height:1.6">'
-                                            f'💬 {customer_cn}</div>', unsafe_allow_html=True)
-
-                                our_resp = rnd.get('our_response', '')
-                                our_cn = rnd.get('our_response_cn', '')
-                                o_from = rnd.get('our_from', '')
-                                o_to = rnd.get('our_to', '')
-                                o_date = rnd.get('our_date', '')
-                                if our_resp:
-                                    header = f"🟢 **我方业务员**"
-                                    if o_from or o_to:
-                                        header += f"　`{o_from}` → `{o_to}`"
-                                    if o_date:
-                                        header += f"　_{o_date}_"
-                                    st.markdown(header)
-                                    st.markdown(
-                                        f'<div style="background:#e8f5e9;padding:12px 16px;border-left:4px solid #4CAF50;'
-                                        f'border-radius:4px;margin:4px 0 8px 0;font-size:14px;line-height:1.7;white-space:pre-wrap">'
-                                        f'{our_resp}</div>', unsafe_allow_html=True)
-                                    if our_cn:
-                                        st.markdown(
-                                            f'<div style="background:#f5f5f5;padding:10px 16px;border-radius:4px;'
-                                            f'margin:0 0 12px 0;font-size:13px;color:#555;line-height:1.6">'
-                                            f'💬 {our_cn}</div>', unsafe_allow_html=True)
-
-                                highlight = rnd.get('highlight', '')
-                                if highlight:
-                                    st.success(f"💡 **要点**: {highlight}")
-                                st.markdown("---")
-
-                        elif convo.get('original_excerpt'):
-                            st.markdown("---")
-                            st.markdown(
-                                f'<div style="background:#fff3e0;padding:12px 16px;border-left:4px solid #FF9800;'
-                                f'border-radius:4px;font-size:14px;line-height:1.7;white-space:pre-wrap">'
-                                f'{convo["original_excerpt"]}</div>', unsafe_allow_html=True)
-                            if convo.get('translation'):
-                                st.markdown(
-                                    f'<div style="background:#f5f5f5;padding:10px 16px;border-radius:4px;'
-                                    f'margin:4px 0;font-size:13px;color:#555;line-height:1.6">'
-                                    f'💬 {convo["translation"]}</div>', unsafe_allow_html=True)
-
-                        lesson = convo.get('lesson_learned', '')
-                        if lesson:
-                            st.info(f"📚 **经验总结**: {lesson}")
-            else:
-                st.info("AI 分析中未提取到关键对话")
-
-        with tab3:
-            _show_customer_emails(conn, email_addr)
+        if has_html_cache:
+            # 有 HTML 缓存：秒开
+            tab1, tab2 = st.tabs(["📋 分析报告", "📮 原始邮件"])
+            with tab1:
+                st.markdown(profile_row[4], unsafe_allow_html=True)
+            with tab2:
+                _show_customer_emails(conn, email_addr)
+        else:
+            # 无缓存：首次查看，生成缓存供下次使用
+            try:
+                from modules.ai_analyzer import _save_report_html, generate_report_html
+                html = generate_report_html(profile, email_addr,
+                                            profile_row[1] or '', profile_row[2] or 0, profile_row[3] or 0)
+                _save_report_html(conn, email_addr, profile,
+                                  profile_row[1] or '', profile_row[2] or 0, profile_row[3] or 0)
+                tab1, tab2 = st.tabs(["📋 分析报告", "📮 原始邮件"])
+                with tab1:
+                    st.markdown(html, unsafe_allow_html=True)
+                with tab2:
+                    _show_customer_emails(conn, email_addr)
+            except Exception:
+                # fallback：直接显示 JSON 关键字段
+                st.json(profile)
 
         # 底部操作区
         st.divider()

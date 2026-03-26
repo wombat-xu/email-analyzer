@@ -64,6 +64,104 @@ def test_api_key(api_key=None, base_url=None):
             return False, f"连接失败: {err[:100]}"
 
 
+def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, email_count=0):
+    """从 profile JSON 生成完整 HTML 报告（用于缓存，避免重复查询）"""
+    basic = profile.get('basic_info', {})
+    h = []
+    h.append(f'<h2>客户分析报告 — {email_addr}</h2>')
+    h.append(f'<p style="color:#666;font-size:13px">分析时间：{analyzed_at[:19]}　|　线程数：{thread_count}　|　邮件数：{email_count}</p>')
+
+    # 基本信息
+    h.append('<h3>基本信息</h3><table style="width:100%;border-collapse:collapse;font-size:14px">')
+    for k, v in basic.items():
+        h.append(f'<tr><td style="padding:4px 8px;font-weight:bold;width:30%;border-bottom:1px solid #eee">{k}</td>'
+                 f'<td style="padding:4px 8px;border-bottom:1px solid #eee">{v}</td></tr>')
+    h.append('</table>')
+
+    products = profile.get('products_of_interest', [])
+    if products:
+        h.append(f'<h3>感兴趣的产品</h3><p>{", ".join(products)}</p>')
+
+    behavior = profile.get('behavior_profile', {})
+    if behavior:
+        h.append('<h3>行为画像</h3><table style="width:100%;border-collapse:collapse;font-size:14px">')
+        for k, v in behavior.items():
+            h.append(f'<tr><td style="padding:4px 8px;font-weight:bold;width:30%;border-bottom:1px solid #eee">{k}</td>'
+                     f'<td style="padding:4px 8px;border-bottom:1px solid #eee">{v}</td></tr>')
+        h.append('</table>')
+
+    rel = profile.get('relationship_status', {})
+    if rel:
+        h.append('<h3>关系状态</h3><ul>')
+        for k, v in rel.items():
+            h.append(f'<li><b>{k}</b>: {v}</li>')
+        h.append('</ul>')
+
+    strat = profile.get('strategy_recommendation', {})
+    if strat:
+        h.append(f'<h3>应对策略</h3>')
+        h.append(f'<div style="background:#e3f2fd;padding:10px 14px;border-radius:4px;margin-bottom:8px">{strat.get("approach","")}</div>')
+        h.append('<div style="display:flex;gap:20px"><div style="flex:1"><b>✅ 应该做</b><ul>')
+        for item in strat.get('dos', []):
+            h.append(f'<li>{item}</li>')
+        h.append('</ul></div><div style="flex:1"><b>❌ 不应该做</b><ul>')
+        for item in strat.get('donts', []):
+            h.append(f'<li>{item}</li>')
+        h.append('</ul></div></div>')
+        h.append('<b>📋 建议下一步</b><ul>')
+        for item in strat.get('next_steps', []):
+            h.append(f'<li>{item}</li>')
+        h.append('</ul>')
+
+    opps = profile.get('opportunities', [])
+    if opps:
+        h.append('<h3>商机</h3><ul>')
+        for opp in opps:
+            color = {"高": "#f44336", "中": "#ff9800", "低": "#4caf50"}.get(opp.get('priority', ''), '#999')
+            h.append(f'<li><span style="color:{color};font-weight:bold">[{opp.get("priority","")}]</span> '
+                     f'<b>{opp.get("type","")}</b>: {opp.get("description","")}</li>')
+        h.append('</ul>')
+
+    convos = profile.get('key_conversations', [])
+    if convos:
+        h.append('<h3>关键对话复盘</h3>')
+        for convo in convos:
+            h.append(f'<details style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:bold">'
+                     f'📌 {convo.get("topic","")} ({convo.get("date","")})</summary>')
+            h.append(f'<p><b>概况</b>: {convo.get("summary","")}</p>')
+            h.append(f'<p><b>结果</b>: {convo.get("outcome","")}</p>')
+            for rnd in convo.get('negotiation_rounds', []):
+                h.append(f'<p style="font-weight:bold">第 {rnd.get("round","")} 轮</p>')
+                if rnd.get('customer_said'):
+                    h.append(f'<div style="background:#e8f4fd;padding:8px 12px;border-left:4px solid #2196F3;'
+                             f'border-radius:4px;margin:4px 0;font-size:13px;white-space:pre-wrap">'
+                             f'🔵 客户: {rnd["customer_said"]}</div>')
+                if rnd.get('our_response'):
+                    h.append(f'<div style="background:#e8f5e9;padding:8px 12px;border-left:4px solid #4CAF50;'
+                             f'border-radius:4px;margin:4px 0;font-size:13px;white-space:pre-wrap">'
+                             f'🟢 我方: {rnd["our_response"]}</div>')
+                if rnd.get('highlight'):
+                    h.append(f'<div style="background:#fff3e0;padding:6px 12px;border-radius:4px;margin:4px 0;font-size:13px">'
+                             f'💡 {rnd["highlight"]}</div>')
+            lesson = convo.get('lesson_learned', '')
+            if lesson:
+                h.append(f'<p style="color:#1565c0">📚 经验总结: {lesson}</p>')
+            h.append('</details>')
+
+    return '\n'.join(h)
+
+
+def _save_report_html(conn, customer_email, profile, analyzed_at, thread_count, email_count):
+    """生成并保存 HTML 报告缓存"""
+    try:
+        html = generate_report_html(profile, customer_email, analyzed_at, thread_count, email_count)
+        conn.execute('UPDATE customer_profiles SET report_html = ? WHERE customer_email = ?',
+                     (html, customer_email))
+        conn.commit()
+    except Exception as e:
+        print(f"  保存 HTML 报告缓存失败: {e}")
+
+
 def ai_chat(client, prompt, max_tokens=None):
     """调用AI生成回复"""
     config = get_ai_config()
@@ -459,6 +557,8 @@ def analyze_customer(conn, customer_email, client=None):
             ))
 
         conn.commit()
+        # 生成并缓存 HTML 报告
+        _save_report_html(conn, customer_email, profile, datetime.now().isoformat(), len(threads), total_emails)
         print(f"  ✓ {customer_email}: {summary}")
         return profile
 
@@ -657,6 +757,9 @@ def analyze_customer_group(conn, keyword, customer_emails=None, client=None):
                   opp.get('priority', '中'), datetime.now().isoformat()))
 
         conn.commit()
+        # 为每个关联邮箱生成并缓存 HTML 报告
+        for ce in customer_emails:
+            _save_report_html(conn, ce, profile, datetime.now().isoformat(), len(threads), total_emails)
         print(f"  ✓ {keyword}: {summary}")
         return profile
 
