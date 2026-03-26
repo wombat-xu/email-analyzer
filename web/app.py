@@ -52,8 +52,10 @@ def format_date(date_str):
 def get_email_date_range(cursor, where_clause="1=1", params=None):
     """获取邮件的真实最早/最晚日期（解析原始日期字符串，过滤异常日期）"""
     from email.utils import parsedate_to_datetime
-    from datetime import datetime as dt
+    from datetime import datetime as dt, timezone
     params = params or []
+    now = dt.now(timezone.utc)
+    min_date = dt(2000, 1, 1, tzinfo=timezone.utc)
     # 从头尾各取500封采样
     dates = []
     for order in ['id ASC', 'id DESC']:
@@ -61,8 +63,12 @@ def get_email_date_range(cursor, where_clause="1=1", params=None):
         for r in cursor.fetchall():
             try:
                 d = parsedate_to_datetime(r[0])
-                # 过滤异常日期：早于2000年或晚于当前时间的都是伪造的
-                if dt(2000, 1, 1, tzinfo=d.tzinfo) <= d <= dt.now(tz=d.tzinfo):
+                # 统一转为 UTC 比较
+                if d.tzinfo is None:
+                    d = d.replace(tzinfo=timezone.utc)
+                else:
+                    d = d.astimezone(timezone.utc)
+                if min_date <= d <= now:
                     dates.append(d)
             except Exception:
                 pass
