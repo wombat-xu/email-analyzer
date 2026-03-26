@@ -1143,12 +1143,12 @@ def show_customer_detail():
                 with st.expander(f"🏢 同公司联系人（@{domain}，共 {len(same_domain)} 人）"):
                     sd_data = [{"邮箱": s[0], "姓名": s[1] or "-", "邮件数": s[2], "分析": s[3]} for s in same_domain]
                     st.dataframe(pd.DataFrame(sd_data), use_container_width=True, hide_index=True)
-                    # 合并分析按钮
-                    all_emails = [email_addr] + [s[0] for s in same_domain]
-                    if st.button(f"🔗 合并分析 @{domain} 全部 {len(all_emails)} 个邮箱", key="merge_domain"):
-                        launch_background_task(all_emails, merge_keyword=domain.split('.')[0])
-                        st.success(f"已提交合并分析任务！将合并 {len(all_emails)} 个邮箱为一个客户画像。")
-                        st.rerun()
+                # 合并分析按钮放在 expander 外面
+                all_emails = [email_addr] + [s[0] for s in same_domain]
+                if st.button(f"🔗 合并分析 @{domain} 全部 {len(all_emails)} 个邮箱", key="merge_domain"):
+                    launch_background_task(all_emails, merge_keyword=domain.split('.')[0])
+                    st.success(f"✅ 已提交合并分析任务！将合并 {len(all_emails)} 个邮箱为一个客户画像。")
+                    st.info("任务在后台运行，完成后刷新页面即可看到结果。")
     else:
         st.warning("本地数据库中没有该客户的邮件")
 
