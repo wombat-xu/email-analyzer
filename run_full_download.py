@@ -29,13 +29,26 @@ class TeeOutput:
 sys.stdout = TeeOutput(LOG_PATH)
 sys.stderr = sys.stdout
 
+# 支持 --account 参数指定单个账号
+target_account = None
+if '--account' in sys.argv:
+    idx = sys.argv.index('--account')
+    target_account = sys.argv[idx + 1]
+
 # 清理之前崩溃留下的僵尸任务
 cleaned = cleanup_zombie_tasks()
 if cleaned:
     print(f"已清理 {cleaned} 个残留的running任务")
 
 accounts = get_all_accounts()
-task_id = create_task(f"全量下载 {len(accounts)} 个账号", task_type='full_download')
+if target_account:
+    accounts = [a for a in accounts if a[0] == target_account]
+    if not accounts:
+        print(f"未找到账号: {target_account}")
+        sys.exit(1)
+
+desc = f"全量下载 {accounts[0][0]}" if target_account else f"全量下载 {len(accounts)} 个账号"
+task_id = create_task(desc, task_type='full_download')
 
 total_new = 0
 try:

@@ -240,65 +240,55 @@ def show_account_management():
                         st.rerun()
                 st.divider()
 
-            # 同步按钮
-            st.markdown("#### 邮件同步")
+            # 每个邮箱账号的同步操作
             import subprocess as _sp
             project_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
             log_file = os.path.join(project_dir, 'data', 'worker.log')
+            has_running = bool(running)
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**🔄 全量同步**")
-                st.caption("扫描所有文件夹的所有邮件，自动跳过已下载的。首次使用或需要补全历史邮件时使用。")
-                if st.button("开始全量同步", type="primary", key="full_sync", disabled=bool(running)):
-                    cmd = [sys.executable, os.path.join(project_dir, 'run_full_download.py')]
-                    _sp.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=_sp.STDOUT, start_new_session=True)
-                    st.success("✅ 全量同步任务已启动！")
-                    time.sleep(1)
-                    st.rerun()
-
-            with col2:
-                st.markdown("**⚡ 增量同步**")
-                st.caption("只拉取上次同步之后的新邮件，速度快。日常使用推荐。")
-                if st.button("开始增量同步", type="primary", key="incr_sync", disabled=bool(running)):
-                    # 增量同步：只拉取每个文件夹最新的邮件（limit=500）
-                    from modules.email_fetcher import create_task, finish_task, fail_task
-                    cmd = [sys.executable, os.path.join(project_dir, 'run_incremental_sync.py')]
-                    _sp.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=_sp.STDOUT, start_new_session=True)
-                    st.success("✅ 增量同步任务已启动！")
-                    time.sleep(1)
-                    st.rerun()
-
-            if running:
-                st.caption("有任务在运行中，请等待完成后再提交")
-
-            # 同步统计
-            st.divider()
-            st.markdown("#### 📊 各账号邮件统计")
             conn = get_db()
             cursor = conn.cursor()
-            stat_data = []
-            for a in accounts:
-                acc_email = a[0]
+            total_all = 0
+
+            for idx, a in enumerate(accounts):
+                acc_email, acc_pwd, acc_imap, acc_name, last_sync, _ = a
                 cursor.execute("SELECT COUNT(*) FROM emails WHERE account = ?", (acc_email,))
                 cnt = cursor.fetchone()[0]
                 cursor.execute("SELECT MIN(date), MAX(date) FROM emails WHERE account = ?", (acc_email,))
                 dr = cursor.fetchone()
                 cursor.execute("SELECT COUNT(DISTINCT folder) FROM emails WHERE account = ?", (acc_email,))
                 folder_cnt = cursor.fetchone()[0]
-                stat_data.append({
-                    "账号": acc_email,
-                    "业务员": a[3] or "-",
-                    "本地邮件数": cnt,
-                    "文件夹数": folder_cnt,
-                    "最早邮件": format_date(dr[0]) if dr[0] else "-",
-                    "最晚邮件": format_date(dr[1]) if dr[1] else "-",
-                    "最后同步": (a[4] or "未同步")[:19],
-                })
+                total_all += cnt
+
+                st.markdown(f"#### {acc_email}（{acc_name or '-'}）")
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                mc1.metric("本地邮件数", f"{cnt:,}")
+                mc2.metric("文件夹数", folder_cnt)
+                mc3.caption(f"最早: {format_date(dr[0]) if dr[0] else '-'}")
+                mc3.caption(f"最晚: {format_date(dr[1]) if dr[1] else '-'}")
+                mc4.caption(f"最后同步: {(last_sync or '未同步')[:19]}")
+
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button(f"🔄 全量同步", key=f"full_{idx}", disabled=has_running):
+                        cmd = [sys.executable, os.path.join(project_dir, 'run_full_download.py'), '--account', acc_email]
+                        _sp.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=_sp.STDOUT, start_new_session=True)
+                        st.success(f"✅ {acc_email} 全量同步已启动！")
+                        time.sleep(1)
+                        st.rerun()
+                with bc2:
+                    if st.button(f"⚡ 增量同步", key=f"incr_{idx}", disabled=has_running):
+                        cmd = [sys.executable, os.path.join(project_dir, 'run_incremental_sync.py'), '--account', acc_email]
+                        _sp.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=_sp.STDOUT, start_new_session=True)
+                        st.success(f"✅ {acc_email} 增量同步已启动！")
+                        time.sleep(1)
+                        st.rerun()
+                st.divider()
+
             conn.close()
-            st.dataframe(pd.DataFrame(stat_data), use_container_width=True, hide_index=True)
-            total_emails = sum(d["本地邮件数"] for d in stat_data)
-            st.caption(f"本地邮件总数: {total_emails:,}")
+            if has_running:
+                st.caption("有任务在运行中，请等待完成后再提交")
+            st.caption(f"本地邮件总数: {total_all:,}")
 
     # ====== Tab 3: 任务管理 ======
     with tab_task:
