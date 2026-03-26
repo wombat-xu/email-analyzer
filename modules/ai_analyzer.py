@@ -66,87 +66,127 @@ def test_api_key(api_key=None, base_url=None):
 
 def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, email_count=0):
     """从 profile JSON 生成完整 HTML 报告（用于缓存，避免重复查询）"""
+    # 字段中文映射
+    BASIC_LABELS = {
+        'name': '姓名', 'company': '公司', 'country': '国家/地区', 'position': '职位',
+        'company_type': '公司类型', 'company_scale': '公司规模', 'all_contacts': '所有联系人',
+    }
+    BEHAVIOR_LABELS = {
+        'price_sensitivity': '价格敏感度', 'price_sensitivity_evidence': '价格敏感度依据',
+        'decision_pattern': '决策模式', 'decision_evidence': '决策模式依据',
+        'payment_preference': '付款方式', 'communication_style': '沟通风格',
+        'response_speed': '回复速度', 'order_frequency': '下单频率',
+        'average_order_value': '平均订单金额',
+    }
+    REL_LABELS = {
+        'current_status': '当前状态', 'relationship_quality': '关系质量',
+        'last_contact_date': '最后联系', 'trust_level': '信任度',
+    }
+
+    def _card(title, content, color='#1976D2'):
+        return (f'<div style="margin:16px 0">'
+                f'<div style="background:{color};color:white;padding:8px 16px;border-radius:8px 8px 0 0;font-size:16px;font-weight:bold">{title}</div>'
+                f'<div style="border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;padding:12px 16px">{content}</div></div>')
+
+    def _kv_rows(data, labels):
+        rows = ''
+        for k, v in data.items():
+            label = labels.get(k, k)
+            if not v or v == '未知':
+                continue
+            rows += (f'<div style="display:flex;padding:6px 0;border-bottom:1px solid #f5f5f5">'
+                     f'<div style="width:140px;font-weight:bold;color:#555;flex-shrink:0">{label}</div>'
+                     f'<div style="flex:1;line-height:1.6">{v}</div></div>')
+        return rows
+
     basic = profile.get('basic_info', {})
     h = []
-    h.append(f'<h2>客户分析报告 — {email_addr}</h2>')
-    h.append(f'<p style="color:#666;font-size:13px">分析时间：{analyzed_at[:19]}　|　线程数：{thread_count}　|　邮件数：{email_count}</p>')
 
-    # 基本信息
-    h.append('<h3>基本信息</h3><table style="width:100%;border-collapse:collapse;font-size:14px">')
-    for k, v in basic.items():
-        h.append(f'<tr><td style="padding:4px 8px;font-weight:bold;width:30%;border-bottom:1px solid #eee">{k}</td>'
-                 f'<td style="padding:4px 8px;border-bottom:1px solid #eee">{v}</td></tr>')
-    h.append('</table>')
+    # 基本信息卡片
+    basic_html = _kv_rows(basic, BASIC_LABELS)
+    h.append(_card('👤 基本信息', basic_html))
 
+    # 感兴趣的产品
     products = profile.get('products_of_interest', [])
     if products:
-        h.append(f'<h3>感兴趣的产品</h3><p>{", ".join(products)}</p>')
+        tags = ''.join(f'<span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:4px 12px;'
+                       f'border-radius:16px;margin:3px;font-size:13px">{p}</span>' for p in products)
+        h.append(_card('🏷️ 感兴趣的产品', tags, '#0288D1'))
 
+    # 行为画像
     behavior = profile.get('behavior_profile', {})
     if behavior:
-        h.append('<h3>行为画像</h3><table style="width:100%;border-collapse:collapse;font-size:14px">')
-        for k, v in behavior.items():
-            h.append(f'<tr><td style="padding:4px 8px;font-weight:bold;width:30%;border-bottom:1px solid #eee">{k}</td>'
-                     f'<td style="padding:4px 8px;border-bottom:1px solid #eee">{v}</td></tr>')
-        h.append('</table>')
+        beh_html = _kv_rows(behavior, BEHAVIOR_LABELS)
+        h.append(_card('📊 行为画像', beh_html, '#7B1FA2'))
 
+    # 关系状态
     rel = profile.get('relationship_status', {})
     if rel:
-        h.append('<h3>关系状态</h3><ul>')
-        for k, v in rel.items():
-            h.append(f'<li><b>{k}</b>: {v}</li>')
-        h.append('</ul>')
+        rel_html = _kv_rows(rel, REL_LABELS)
+        h.append(_card('🤝 关系状态', rel_html, '#388E3C'))
 
+    # 应对策略
     strat = profile.get('strategy_recommendation', {})
     if strat:
-        h.append(f'<h3>应对策略</h3>')
-        h.append(f'<div style="background:#e3f2fd;padding:10px 14px;border-radius:4px;margin-bottom:8px">{strat.get("approach","")}</div>')
-        h.append('<div style="display:flex;gap:20px"><div style="flex:1"><b>✅ 应该做</b><ul>')
+        s = f'<div style="background:#e8f5e9;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:14px;line-height:1.6">{strat.get("approach","")}</div>'
+        s += '<div style="display:flex;gap:16px;flex-wrap:wrap">'
+        s += '<div style="flex:1;min-width:200px"><div style="font-weight:bold;color:#2e7d32;margin-bottom:4px">✅ 应该做</div><ul style="margin:0;padding-left:20px">'
         for item in strat.get('dos', []):
-            h.append(f'<li>{item}</li>')
-        h.append('</ul></div><div style="flex:1"><b>❌ 不应该做</b><ul>')
+            s += f'<li style="margin:4px 0;line-height:1.5">{item}</li>'
+        s += '</ul></div>'
+        s += '<div style="flex:1;min-width:200px"><div style="font-weight:bold;color:#c62828;margin-bottom:4px">❌ 不应该做</div><ul style="margin:0;padding-left:20px">'
         for item in strat.get('donts', []):
-            h.append(f'<li>{item}</li>')
-        h.append('</ul></div></div>')
-        h.append('<b>📋 建议下一步</b><ul>')
+            s += f'<li style="margin:4px 0;line-height:1.5">{item}</li>'
+        s += '</ul></div></div>'
+        s += '<div style="margin-top:12px"><div style="font-weight:bold;color:#1565c0;margin-bottom:4px">📋 建议下一步</div><ul style="margin:0;padding-left:20px">'
         for item in strat.get('next_steps', []):
-            h.append(f'<li>{item}</li>')
-        h.append('</ul>')
+            s += f'<li style="margin:4px 0;line-height:1.5">{item}</li>'
+        s += '</ul></div>'
+        h.append(_card('🎯 应对策略', s, '#F57C00'))
 
+    # 商机
     opps = profile.get('opportunities', [])
     if opps:
-        h.append('<h3>商机</h3><ul>')
+        o = ''
         for opp in opps:
             color = {"高": "#f44336", "中": "#ff9800", "低": "#4caf50"}.get(opp.get('priority', ''), '#999')
-            h.append(f'<li><span style="color:{color};font-weight:bold">[{opp.get("priority","")}]</span> '
-                     f'<b>{opp.get("type","")}</b>: {opp.get("description","")}</li>')
-        h.append('</ul>')
+            o += (f'<div style="display:flex;align-items:flex-start;padding:8px 0;border-bottom:1px solid #f5f5f5">'
+                  f'<span style="background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:12px;margin-right:8px;flex-shrink:0">{opp.get("priority","")}</span>'
+                  f'<div><b>{opp.get("type","")}</b>：{opp.get("description","")}</div></div>')
+        h.append(_card('💡 商机', o, '#D32F2F'))
 
+    # 关键对话复盘
     convos = profile.get('key_conversations', [])
     if convos:
-        h.append('<h3>关键对话复盘</h3>')
+        c = ''
         for convo in convos:
-            h.append(f'<details style="margin-bottom:8px"><summary style="cursor:pointer;font-weight:bold">'
-                     f'📌 {convo.get("topic","")} ({convo.get("date","")})</summary>')
-            h.append(f'<p><b>概况</b>: {convo.get("summary","")}</p>')
-            h.append(f'<p><b>结果</b>: {convo.get("outcome","")}</p>')
+            c += (f'<details style="margin-bottom:10px;border:1px solid #e0e0e0;border-radius:6px">'
+                  f'<summary style="cursor:pointer;padding:10px 14px;background:#fafafa;font-weight:bold;border-radius:6px">'
+                  f'📌 {convo.get("topic","")} ({convo.get("date","")})</summary>'
+                  f'<div style="padding:10px 14px">')
+            c += f'<p><b>概况</b>：{convo.get("summary","")}</p>'
+            c += f'<p><b>结果</b>：{convo.get("outcome","")}</p>'
             for rnd in convo.get('negotiation_rounds', []):
-                h.append(f'<p style="font-weight:bold">第 {rnd.get("round","")} 轮</p>')
+                c += f'<div style="font-weight:bold;margin:10px 0 4px">第 {rnd.get("round","")} 轮</div>'
                 if rnd.get('customer_said'):
-                    h.append(f'<div style="background:#e8f4fd;padding:8px 12px;border-left:4px solid #2196F3;'
-                             f'border-radius:4px;margin:4px 0;font-size:13px;white-space:pre-wrap">'
-                             f'🔵 客户: {rnd["customer_said"]}</div>')
+                    c += (f'<div style="background:#e8f4fd;padding:10px 14px;border-left:4px solid #2196F3;'
+                          f'border-radius:4px;margin:6px 0;font-size:13px;line-height:1.7;white-space:pre-wrap">'
+                          f'🔵 <b>客户</b>：{rnd["customer_said"]}</div>')
+                if rnd.get('customer_said_cn'):
+                    c += f'<div style="background:#f5f5f5;padding:6px 14px;border-radius:4px;font-size:12px;color:#666;margin:0 0 6px">💬 {rnd["customer_said_cn"]}</div>'
                 if rnd.get('our_response'):
-                    h.append(f'<div style="background:#e8f5e9;padding:8px 12px;border-left:4px solid #4CAF50;'
-                             f'border-radius:4px;margin:4px 0;font-size:13px;white-space:pre-wrap">'
-                             f'🟢 我方: {rnd["our_response"]}</div>')
+                    c += (f'<div style="background:#e8f5e9;padding:10px 14px;border-left:4px solid #4CAF50;'
+                          f'border-radius:4px;margin:6px 0;font-size:13px;line-height:1.7;white-space:pre-wrap">'
+                          f'🟢 <b>我方</b>：{rnd["our_response"]}</div>')
+                if rnd.get('our_response_cn'):
+                    c += f'<div style="background:#f5f5f5;padding:6px 14px;border-radius:4px;font-size:12px;color:#666;margin:0 0 6px">💬 {rnd["our_response_cn"]}</div>'
                 if rnd.get('highlight'):
-                    h.append(f'<div style="background:#fff3e0;padding:6px 12px;border-radius:4px;margin:4px 0;font-size:13px">'
-                             f'💡 {rnd["highlight"]}</div>')
+                    c += f'<div style="background:#fff3e0;padding:6px 14px;border-radius:4px;margin:6px 0;font-size:13px">💡 <b>要点</b>：{rnd["highlight"]}</div>'
             lesson = convo.get('lesson_learned', '')
             if lesson:
-                h.append(f'<p style="color:#1565c0">📚 经验总结: {lesson}</p>')
-            h.append('</details>')
+                c += f'<div style="background:#e3f2fd;padding:8px 14px;border-radius:4px;margin-top:8px;font-size:13px">📚 <b>经验总结</b>：{lesson}</div>'
+            c += '</div></details>'
+        h.append(_card('⚔️ 关键对话复盘', c, '#455A64'))
 
     return '\n'.join(h)
 

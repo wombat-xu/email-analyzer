@@ -1079,42 +1079,52 @@ def _build_report_markdown(profile, email_addr, earliest, latest, total_count, p
 
 def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profile_row):
     """生成 PDF 格式的客户分析报告"""
+    LABELS = {
+        'name': '姓名', 'company': '公司', 'country': '国家', 'position': '职位',
+        'company_type': '公司类型', 'company_scale': '公司规模', 'all_contacts': '联系人',
+        'price_sensitivity': '价格敏感度', 'price_sensitivity_evidence': '价格依据',
+        'decision_pattern': '决策模式', 'decision_evidence': '决策依据',
+        'payment_preference': '付款方式', 'communication_style': '沟通风格',
+        'response_speed': '回复速度', 'order_frequency': '下单频率',
+        'average_order_value': '平均订单额', 'current_status': '当前状态',
+        'relationship_quality': '关系质量', 'last_contact_date': '最后联系', 'trust_level': '信任度',
+    }
     try:
         from fpdf import FPDF
-
-        class PDF(FPDF):
-            def header(self):
-                self.set_font("chinese", "B", 14)
-                self.cell(0, 10, f"客户分析报告 — {email_addr}", align="C", new_x="LMARGIN", new_y="NEXT")
-                self.set_font("chinese", "", 9)
-                self.cell(0, 6, f"基于 {earliest} 至 {latest} 的 {total_count:,} 封邮件  |  分析时间: {(profile_row[1] or '')[:19]}", align="C", new_x="LMARGIN", new_y="NEXT")
-                self.ln(4)
-
-        pdf = PDF()
-        # 加载中文字体
+        pdf = FPDF()
         font_path = "/System/Library/Fonts/STHeiti Medium.ttc"
-        pdf.add_font("chinese", "", font_path, uni=True)
-        pdf.add_font("chinese", "B", font_path, uni=True)
+        pdf.add_font("cn", "", font_path)
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
 
+        # 标题
+        pdf.set_font("cn", size=16)
+        pdf.cell(0, 10, f"客户分析报告 - {email_addr}", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("cn", size=9)
+        pdf.cell(0, 6, f"基于 {earliest} 至 {latest} 的 {total_count:,} 封邮件 | 分析时间: {(profile_row[1] or '')[:19]}", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(6)
+
         def section(title):
-            pdf.set_font("chinese", "B", 12)
-            pdf.cell(0, 8, title, new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("cn", size=13)
+            pdf.set_fill_color(33, 150, 243)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(0, 8, f"  {title}", fill=True, new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(0, 0, 0)
             pdf.ln(2)
 
-        def text(content, size=10):
-            pdf.set_font("chinese", "", size)
-            pdf.multi_cell(0, 6, str(content))
+        def kv(key, val):
+            label = LABELS.get(key, key)
+            if not val or val == '未知':
+                return
+            pdf.set_font("cn", size=10)
+            pdf.cell(50, 6, f"{label}: ")
+            pdf.multi_cell(0, 6, str(val)[:300])
+
+        def text(content):
+            pdf.set_font("cn", size=10)
+            pdf.multi_cell(0, 6, str(content)[:500])
             pdf.ln(1)
 
-        def kv(key, val):
-            pdf.set_font("chinese", "B", 10)
-            pdf.cell(50, 6, str(key) + ": ")
-            pdf.set_font("chinese", "", 10)
-            pdf.multi_cell(0, 6, str(val))
-
-        # 基本信息
         basic = profile.get('basic_info', {})
         section("基本信息")
         for k, v in basic.items():
@@ -1141,19 +1151,14 @@ def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profil
         if strat:
             section("应对策略")
             text(strat.get('approach', ''))
-            pdf.set_font("chinese", "B", 10)
+            pdf.set_font("cn", size=10)
             pdf.cell(0, 6, "应该做:", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("chinese", "", 10)
             for item in strat.get('dos', []):
                 pdf.multi_cell(0, 6, f"  · {item}")
-            pdf.set_font("chinese", "B", 10)
             pdf.cell(0, 6, "不应该做:", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("chinese", "", 10)
             for item in strat.get('donts', []):
                 pdf.multi_cell(0, 6, f"  · {item}")
-            pdf.set_font("chinese", "B", 10)
             pdf.cell(0, 6, "建议下一步:", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("chinese", "", 10)
             for item in strat.get('next_steps', []):
                 pdf.multi_cell(0, 6, f"  · {item}")
 
@@ -1167,16 +1172,16 @@ def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profil
         if convos:
             section("关键对话复盘")
             for convo in convos:
-                pdf.set_font("chinese", "B", 10)
+                pdf.set_font("cn", size=11)
                 pdf.multi_cell(0, 6, f"{convo.get('topic', '')} ({convo.get('date', '')})")
-                pdf.set_font("chinese", "", 9)
+                pdf.set_font("cn", size=9)
                 pdf.multi_cell(0, 5, f"概况: {convo.get('summary', '')}")
                 pdf.multi_cell(0, 5, f"结果: {convo.get('outcome', '')}")
                 for rnd in convo.get('negotiation_rounds', []):
                     if rnd.get('customer_said'):
-                        pdf.multi_cell(0, 5, f"  客户: {rnd['customer_said'][:200]}")
+                        pdf.multi_cell(0, 5, f"  客户: {rnd['customer_said'][:300]}")
                     if rnd.get('our_response'):
-                        pdf.multi_cell(0, 5, f"  我方: {rnd['our_response'][:200]}")
+                        pdf.multi_cell(0, 5, f"  我方: {rnd['our_response'][:300]}")
                     if rnd.get('highlight'):
                         pdf.multi_cell(0, 5, f"  要点: {rnd['highlight']}")
                 pdf.ln(3)
@@ -1184,6 +1189,8 @@ def _build_report_pdf(profile, email_addr, earliest, latest, total_count, profil
         return pdf.output()
     except Exception as e:
         print(f"PDF生成失败: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
