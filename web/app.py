@@ -1215,21 +1215,44 @@ def show_customer_detail():
     search = st.text_input("搜索客户（邮箱/姓名/公司/域名）", "", key="detail_search", placeholder="输入关键词搜索...")
 
     if not search:
-        # 未搜索时：显示提示 + 已分析客户快捷选择
+        # 未搜索时：按域名分组显示已分析客户
         cursor.execute('''
-            SELECT customer_email, customer_name, company_name, country
-            FROM customer_profiles ORDER BY customer_email
+            SELECT cp.customer_email, cp.customer_name, cp.company_name, cp.country, c.domain
+            FROM customer_profiles cp
+            LEFT JOIN customers c ON cp.customer_email = c.email
+            ORDER BY c.domain, cp.customer_email
         ''')
         profiles = cursor.fetchall()
         if profiles:
-            # 加一个空选项避免默认加载第一个客户
-            options = ["-- 请选择或搜索客户 --"] + [f"{p[0]} ({p[1] or ''} - {p[2] or ''})" for p in profiles]
-            selected = st.selectbox("已分析客户快捷选择", options)
+            # 按域名分组
+            from collections import OrderedDict
+            domain_groups = OrderedDict()
+            for p in profiles:
+                domain = p[4] or p[0].split('@')[1] if '@' in p[0] else 'other'
+                if domain not in domain_groups:
+                    domain_groups[domain] = []
+                domain_groups[domain].append(p)
+
+            group_options = ["-- 请选择或搜索客户 --"]
+            group_map = {}  # option -> (email_addr, is_group, domain)
+            for domain, members in domain_groups.items():
+                if len(members) > 1:
+                    company = members[0][2] or domain
+                    label = f"🏢 {domain} ({company}, {len(members)}个邮箱, 已合并分析)"
+                    group_options.append(label)
+                    group_map[label] = (members[0][0], True, domain)
+                else:
+                    p = members[0]
+                    label = f"{p[0]} ({p[1] or ''} - {p[2] or ''})"
+                    group_options.append(label)
+                    group_map[label] = (p[0], False, domain)
+
+            selected = st.selectbox("已分析客户", group_options)
             if selected == "-- 请选择或搜索客户 --":
                 st.info("请在上方搜索框输入关键词，或从下拉列表选择已分析的客户。")
                 conn.close()
                 return
-            email_addr = selected.split(" (")[0]
+            email_addr, is_group_view, _ = group_map[selected]
         else:
             st.info("还没有分析过任何客户。请输入邮箱搜索，或到「TOP客户」页面批量分析。")
             conn.close()
@@ -1336,12 +1359,22 @@ def show_customer_detail():
                 with st.expander(f"🏢 同公司联系人（@{domain}，共 {len(same_domain)} 人）"):
                     sd_data = [{"邮箱": s[0], "姓名": s[1] or "-", "邮件数": s[2], "分析": s[3]} for s in same_domain]
                     st.dataframe(pd.DataFrame(sd_data), use_container_width=True, hide_index=True)
-                # 合并分析按钮放在 expander 外面
+                # 合并分析按钮 — 智能判断
                 all_emails = [email_addr] + [s[0] for s in same_domain]
-                if st.button(f"🔗 合并分析 @{domain} 全部 {len(all_emails)} 个邮箱", key="merge_domain"):
-                    launch_background_task(all_emails, merge_keyword=domain.split('.')[0])
-                    st.success(f"✅ 已提交合并分析任务！将合并 {len(all_emails)} 个邮箱为一个客户画像。")
-                    st.info("任务在后台运行，完成后刷新页面即可看到结果。")
+                analyzed_count = sum(1 for s in same_domain if s[3] == '✅') + (1 if has_profile else 0)
+                all_analyzed = analyzed_count == len(all_emails)
+
+                if all_analyzed:
+                    # 已全部分析过（合并分析结果已存在），不需要重新提交
+                    st.success(f"✅ @{domain} 全部 {len(all_emails)} 个邮箱已合并分析，当前显示的即为合并结果")
+                    if st.button(f"🔄 重新合并分析 @{domain}", key="re_merge_domain"):
+                        launch_background_task(all_emails, merge_keyword=domain.split('.')[0])
+                        st.info("已提交重新合并分析任务，完成后刷新查看。")
+                else:
+                    if st.button(f"🔗 合并分析 @{domain} 全部 {len(all_emails)} 个邮箱", key="merge_domain"):
+                        launch_background_task(all_emails, merge_keyword=domain.split('.')[0])
+                        st.success(f"✅ 已提交合并分析任务！将合并 {len(all_emails)} 个邮箱为一个客户画像。")
+                        st.info("任务在后台运行，完成后刷新页面即可看到结果。")
     else:
         st.warning("本地数据库中没有该客户的邮件")
 
