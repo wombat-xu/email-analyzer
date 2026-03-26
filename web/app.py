@@ -50,17 +50,20 @@ def format_date(date_str):
 
 
 def get_email_date_range(cursor, where_clause="1=1", params=None):
-    """获取邮件的真实最早/最晚日期（解析原始日期字符串）"""
+    """获取邮件的真实最早/最晚日期（解析原始日期字符串，过滤异常日期）"""
     from email.utils import parsedate_to_datetime
+    from datetime import datetime as dt
     params = params or []
-    # 从头尾各取200封采样，覆盖最早和最晚
+    # 从头尾各取500封采样
     dates = []
     for order in ['id ASC', 'id DESC']:
-        cursor.execute(f"SELECT date FROM emails WHERE {where_clause} AND date != '' ORDER BY {order} LIMIT 200", params)
+        cursor.execute(f"SELECT date FROM emails WHERE {where_clause} AND date != '' ORDER BY {order} LIMIT 500", params)
         for r in cursor.fetchall():
             try:
-                dt = parsedate_to_datetime(r[0])
-                dates.append(dt)
+                d = parsedate_to_datetime(r[0])
+                # 过滤异常日期：早于2000年或晚于当前时间的都是伪造的
+                if dt(2000, 1, 1, tzinfo=d.tzinfo) <= d <= dt.now(tz=d.tzinfo):
+                    dates.append(d)
             except Exception:
                 pass
     if not dates:
