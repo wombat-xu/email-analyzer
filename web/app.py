@@ -1002,6 +1002,16 @@ def show_customer_list():
     conn.close()
 
 
+def _get_cached_date_range(cursor, cache_key, where_clause, params):
+    """带 session_state 缓存的日期范围查询"""
+    full_key = f"date_range_{cache_key}"
+    if full_key in st.session_state:
+        return st.session_state[full_key]
+    result = get_email_date_range(cursor, where_clause, params)
+    st.session_state[full_key] = result
+    return result
+
+
 def show_customer_detail():
     """客户详情 - 支持搜索所有客户，含数据来源说明"""
     conn = get_db()
@@ -1009,20 +1019,25 @@ def show_customer_detail():
 
     st.subheader("🔍 客户详情")
 
-    # === 搜索框 ===
+    # === 搜索框（统一入口）===
     search = st.text_input("搜索客户（邮箱/姓名/公司/域名）", "", key="detail_search", placeholder="输入关键词搜索...")
 
     if not search:
-        # 默认显示已分析客户列表
+        # 未搜索时：显示提示 + 已分析客户快捷选择
         cursor.execute('''
             SELECT customer_email, customer_name, company_name, country
             FROM customer_profiles ORDER BY customer_email
         ''')
         profiles = cursor.fetchall()
         if profiles:
-            options = [f"{p[0]} ({p[1] or ''} - {p[2] or ''})" for p in profiles]
-            selected = st.selectbox("或从已分析客户中选择", options)
-            email_addr = selected.split(" (")[0] if selected else None
+            # 加一个空选项避免默认加载第一个客户
+            options = ["-- 请选择或搜索客户 --"] + [f"{p[0]} ({p[1] or ''} - {p[2] or ''})" for p in profiles]
+            selected = st.selectbox("已分析客户快捷选择", options)
+            if selected == "-- 请选择或搜索客户 --":
+                st.info("请在上方搜索框输入关键词，或从下拉列表选择已分析的客户。")
+                conn.close()
+                return
+            email_addr = selected.split(" (")[0]
         else:
             st.info("还没有分析过任何客户。请输入邮箱搜索，或到「TOP客户」页面批量分析。")
             conn.close()
@@ -1052,19 +1067,19 @@ def show_customer_detail():
         conn.close()
         return
 
-    # === 数据来源说明 ===
-    # 总体统计
+    # === 数据来源说明（带缓存）===
     cursor.execute("SELECT COUNT(*) FROM emails WHERE from_addr LIKE ? OR to_addr LIKE ?",
                    (f"%{email_addr}%", f"%{email_addr}%"))
     total_count = cursor.fetchone()[0]
-    earliest, latest = get_email_date_range(
-        cursor, "from_addr LIKE ? OR to_addr LIKE ?",
+    earliest, latest = _get_cached_date_range(
+        cursor, email_addr,
+        "from_addr LIKE ? OR to_addr LIKE ?",
         [f"%{email_addr}%", f"%{email_addr}%"]
     )
 
     # 按公司邮箱拆分统计
     cursor.execute("SELECT DISTINCT account FROM emails ORDER BY account")
-    accounts = [r[0] for r in cursor.fetchall()]
+    accounts_list = [r[0] for r in cursor.fetchall()]
 
     # 检查是否已分析
     cursor.execute('SELECT profile_json, analyzed_at, thread_count, email_count FROM customer_profiles WHERE customer_email = ?', (email_addr,))
@@ -1087,23 +1102,45 @@ def show_customer_detail():
 
         # 按邮箱账号拆分
         account_stats = []
-        for acc in accounts:
+        for acc in accounts_list:
             cursor.execute("SELECT COUNT(*) FROM emails WHERE account = ? AND (from_addr LIKE ? OR to_addr LIKE ?)",
                            (acc, f"%{email_addr}%", f"%{email_addr}%"))
             cnt = cursor.fetchone()[0]
             if cnt > 0:
-                acc_e, acc_l = get_email_date_range(
-                    cursor, "account = ? AND (from_addr LIKE ? OR to_addr LIKE ?)",
+                acc_e, acc_l = _get_cached_date_range(
+                    cursor, f"{email_addr}_{acc}",
+                    "account = ? AND (from_addr LIKE ? OR to_addr LIKE ?)",
                     [acc, f"%{email_addr}%", f"%{email_addr}%"]
                 )
                 account_stats.append({
-                    "公司邮箱": acc,
-                    "邮件数": cnt,
-                    "最早邮件": acc_e,
-                    "最晚邮件": acc_l,
+                    "公司邮箱": acc, "邮件数": cnt,
+                    "最早邮件": acc_e, "最晚邮件": acc_l,
                 })
         if account_stats:
             st.dataframe(pd.DataFrame(account_stats), use_container_width=True, hide_index=True)
+
+        # === 同域名联系人 ===
+        domain = email_addr.split('@')[1] if '@' in email_addr else ''
+        if domain:
+            cursor.execute("""
+                SELECT c.email, c.name, c.email_count,
+                       CASE WHEN cp.id IS NOT NULL THEN '✅' ELSE '⏳' END
+                FROM customers c
+                LEFT JOIN customer_profiles cp ON c.email = cp.customer_email
+                WHERE c.domain = ? AND c.email != ? AND c.is_internal = 0
+                ORDER BY c.email_count DESC LIMIT 10
+            """, (domain, email_addr))
+            same_domain = cursor.fetchall()
+            if same_domain:
+                with st.expander(f"🏢 同公司联系人（@{domain}，共 {len(same_domain)} 人）"):
+                    sd_data = [{"邮箱": s[0], "姓名": s[1] or "-", "邮件数": s[2], "分析": s[3]} for s in same_domain]
+                    st.dataframe(pd.DataFrame(sd_data), use_container_width=True, hide_index=True)
+                    # 合并分析按钮
+                    all_emails = [email_addr] + [s[0] for s in same_domain]
+                    if st.button(f"🔗 合并分析 @{domain} 全部 {len(all_emails)} 个邮箱", key="merge_domain"):
+                        launch_background_task(all_emails, merge_keyword=domain.split('.')[0])
+                        st.success(f"已提交合并分析任务！将合并 {len(all_emails)} 个邮箱为一个客户画像。")
+                        st.rerun()
     else:
         st.warning("本地数据库中没有该客户的邮件")
 
@@ -1275,12 +1312,61 @@ def show_customer_detail():
         with tab3:
             _show_customer_emails(conn, email_addr)
 
-        # 底部：重新分析按钮
+        # 底部操作区
         st.divider()
-        if st.button("🔄 重新分析此客户", key="re_analyze"):
-            launch_background_task([email_addr])
-            st.success("已提交重新分析任务！")
-            st.rerun()
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            if st.button("🔄 重新分析此客户", key="re_analyze"):
+                launch_background_task([email_addr])
+                st.success("已提交重新分析任务！")
+                st.rerun()
+        with bcol2:
+            # 导出分析报告
+            report_lines = []
+            report_lines.append(f"客户分析报告 - {email_addr}")
+            report_lines.append(f"分析时间: {(profile_row[1] or '')[:19]}")
+            report_lines.append(f"邮件范围: {earliest_fmt} ~ {latest_fmt}，共 {total_count:,} 封")
+            report_lines.append("=" * 60)
+            basic = profile.get('basic_info', {})
+            report_lines.append(f"\n【基本信息】")
+            for k, v in basic.items():
+                report_lines.append(f"  {k}: {v}")
+            products = profile.get('products_of_interest', [])
+            if products:
+                report_lines.append(f"\n【感兴趣的产品】\n  {', '.join(products)}")
+            behavior = profile.get('behavior_profile', {})
+            if behavior:
+                report_lines.append(f"\n【行为画像】")
+                for k, v in behavior.items():
+                    report_lines.append(f"  {k}: {v}")
+            rel = profile.get('relationship_status', {})
+            if rel:
+                report_lines.append(f"\n【关系状态】")
+                for k, v in rel.items():
+                    report_lines.append(f"  {k}: {v}")
+            strat = profile.get('strategy_recommendation', {})
+            if strat:
+                report_lines.append(f"\n【应对策略】\n  {strat.get('approach', '')}")
+                report_lines.append("  应该做:")
+                for item in strat.get('dos', []):
+                    report_lines.append(f"    - {item}")
+                report_lines.append("  不应该做:")
+                for item in strat.get('donts', []):
+                    report_lines.append(f"    - {item}")
+                report_lines.append("  下一步:")
+                for item in strat.get('next_steps', []):
+                    report_lines.append(f"    - {item}")
+            opps = profile.get('opportunities', [])
+            if opps:
+                report_lines.append(f"\n【商机】")
+                for opp in opps:
+                    report_lines.append(f"  [{opp.get('priority','')}] {opp.get('type','')}: {opp.get('description','')}")
+            report_text = "\n".join(report_lines)
+            st.download_button(
+                "📥 导出分析报告", report_text,
+                file_name=f"客户分析_{email_addr.split('@')[0]}_{earliest_fmt}.txt",
+                mime="text/plain", key="export_report"
+            )
 
     # 未分析客户：直接显示原始邮件
     if not has_profile and total_count > 0:
@@ -1292,10 +1378,30 @@ def show_customer_detail():
 
 
 def _show_customer_emails(conn, email_addr):
-    """显示客户的原始邮件线程（带分页，区分方向）"""
+    """显示客户的原始邮件线程（带搜索、分页、区分方向）"""
     threads = get_customer_threads(conn, email_addr)
     if not threads:
         st.info("没有找到相关邮件线程")
+        return
+
+    # 邮件搜索
+    email_search = st.text_input("搜索邮件（主题/内容）", "", key="email_thread_search", placeholder="输入关键词过滤...")
+    if email_search:
+        kw = email_search.lower()
+        filtered = []
+        for t in threads:
+            if kw in (t.get('subject') or '').lower():
+                filtered.append(t)
+                continue
+            for em in t.get('emails', []):
+                if kw in (em.get('body') or '').lower() or kw in (em.get('subject') or '').lower():
+                    filtered.append(t)
+                    break
+        threads = filtered
+        st.caption(f"找到 {len(threads)} 个匹配的对话线程")
+
+    if not threads:
+        st.info("没有匹配的邮件")
         return
 
     # 分页
