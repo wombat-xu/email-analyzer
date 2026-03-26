@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config.settings import DB_PATH, OPENROUTER_API_KEY, OPENROUTER_BASE_URL, AI_MODEL, MAX_TOKENS_PER_ANALYSIS, COMPANY_PRODUCTS, DORMANT_MONTHS
+from modules.email_fetcher import get_db_conn
 
 from openai import OpenAI
 from modules.email_parser import get_customer_threads, get_all_external_customers, get_email_text
@@ -666,7 +667,7 @@ def analyze_customer_group(conn, keyword, customer_emails=None, client=None):
 
 def analyze_all_customers(min_emails=3, max_customers=None):
     """批量分析所有客户"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     init_analysis_tables(conn)
 
     client = get_ai_client()
@@ -743,7 +744,7 @@ def find_inquired_not_ordered(conn):
 def chat_with_knowledge(question, conn=None):
     """AI对话助手 - 基于知识库回答问题"""
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_conn()
 
     client = get_ai_client()
     cursor = conn.cursor()

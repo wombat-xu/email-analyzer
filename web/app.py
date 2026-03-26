@@ -30,9 +30,8 @@ CONTACT_TYPE_LABELS = {
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    from modules.email_fetcher import get_db_conn
+    return get_db_conn()
 
 
 def format_date(date_str):
@@ -1156,6 +1155,54 @@ def show_customer_detail():
     if _spinner:
         _spinner.__exit__(None, None, None)
         st.session_state[loaded_key] = True
+
+    # === 该客户的任务状态 ===
+    from modules.email_fetcher import get_running_tasks, get_recent_tasks
+    _domain = email_addr.split('@')[1] if '@' in email_addr else email_addr
+    _running = get_running_tasks()
+    _customer_task = None
+    for _t in _running:
+        _desc = _t[2] or ''
+        if email_addr in _desc or _domain.split('.')[0] in _desc:
+            _customer_task = _t
+            break
+    if _customer_task:
+        _tid, _, _desc, _cur, _total, _text, _created = _customer_task
+        st.markdown("#### 🔄 正在分析中...")
+        if _total > 0:
+            st.progress(min(_cur / _total, 1.0), text=_text or f"{_cur}/{_total}")
+        else:
+            st.info(_text or "分析进行中...")
+        if st.button("🔄 刷新进度", key="refresh_detail_task"):
+            st.rerun()
+    else:
+        # 检查最近5分钟内是否有刚完成的任务
+        _recent = get_recent_tasks(5)
+        for _t in _recent:
+            _desc = _t[2] or ''
+            if (_t[3] == 'done' and (email_addr in _desc or _domain.split('.')[0] in _desc)):
+                if _t[9]:  # finished_at
+                    try:
+                        from datetime import datetime as _dt
+                        _finished = _dt.fromisoformat(_t[9])
+                        if (_dt.now() - _finished).total_seconds() < 300:
+                            st.success(f"✅ 分析已完成！{_t[7] or ''}")
+                            if st.button("🔄 刷新查看最新结果", key="refresh_done"):
+                                st.session_state.pop(loaded_key, None)
+                                st.rerun()
+                    except Exception:
+                        pass
+                break
+            elif (_t[3] == 'failed' and (email_addr in _desc or _domain.split('.')[0] in _desc)):
+                if _t[9]:
+                    try:
+                        from datetime import datetime as _dt
+                        _finished = _dt.fromisoformat(_t[9])
+                        if (_dt.now() - _finished).total_seconds() < 300:
+                            st.error(f"❌ 分析失败：{_t[7] or '未知错误'}")
+                    except Exception:
+                        pass
+                break
 
     # === 分析/重新分析按钮 ===
     if not has_profile:

@@ -30,7 +30,8 @@ def create_backup(reason="manual"):
     backup_path = os.path.join(BACKUP_DIR, filename)
 
     print(f"正在创建备份: {filename} ...")
-    conn = sqlite3.connect(DB_PATH, timeout=60)
+    from modules.email_fetcher import get_db_conn
+    conn = get_db_conn()
     conn.execute("PRAGMA busy_timeout=60000")
     conn.execute(f"VACUUM INTO '{backup_path}'")
     conn.close()
@@ -80,7 +81,8 @@ def restore_backup(backup_path):
     print(f"恢复完成！数据库大小: {size_mb:.0f} MB")
 
     # 验证
-    conn = sqlite3.connect(DB_PATH)
+    from modules.email_fetcher import get_db_conn
+    conn = get_db_conn()
     count = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
     conn.close()
     print(f"验证通过，邮件数: {count}")

@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from config.settings import DB_PATH
 from modules.email_fetcher import (
-    fetch_customer_emails, get_all_accounts, create_task, finish_task, fail_task
+    fetch_customer_emails, get_all_accounts, create_task, finish_task, fail_task, get_db_conn
 )
 from modules.email_parser import process_all
 from modules.ai_analyzer import (
@@ -19,7 +19,7 @@ from modules.ai_analyzer import (
 
 def _has_local_emails(customer_emails, search_keywords=None):
     """检查本地数据库是否已有该客户的邮件"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = get_db_conn()
     cursor = conn.cursor()
     total = 0
     for email in customer_emails:
@@ -84,7 +84,7 @@ def run_fetch_and_analyze(customer_emails, do_analyze=True, merge_keyword=None, 
             current_step = 0
             progress_text = f"本地已有邮件数据，跳过 IMAP 拉取，直接 AI 分析..."
             print(progress_text)
-            conn = sqlite3.connect(DB_PATH, timeout=30)
+            conn = get_db_conn()
             conn.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
                          (0, 1, progress_text, task_id))
             conn.commit()
@@ -99,7 +99,7 @@ def run_fetch_and_analyze(customer_emails, do_analyze=True, merge_keyword=None, 
                 progress_text = f"[{current_step}/{total_steps}] 从 {acc_email} 搜索「{merge_keyword or primary_email}」的所有邮件..."
                 print(progress_text)
 
-                conn = sqlite3.connect(DB_PATH, timeout=30)
+                conn = get_db_conn()
                 conn.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
                              (current_step, total_steps, progress_text, task_id))
                 conn.commit()
@@ -123,7 +123,7 @@ def run_fetch_and_analyze(customer_emails, do_analyze=True, merge_keyword=None, 
             progress_text = f"AI 合并分析「{merge_keyword or primary_email}」的 {len(customer_emails)} 个邮箱..."
             print(progress_text)
 
-            conn = sqlite3.connect(DB_PATH, timeout=30)
+            conn = get_db_conn()
             conn.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
                          (1, 1, progress_text, task_id))
             conn.commit()
@@ -166,7 +166,7 @@ if __name__ == '__main__':
 
     # 如果有关键词但没有指定邮箱，自动搜索
     if merge_keyword and not args:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_conn()
         args = find_related_emails_by_keyword(conn, merge_keyword)
         conn.close()
         if args:

@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config.settings import DB_PATH
+from modules.email_fetcher import get_db_conn
 
 
 def init_thread_tables(conn):
@@ -517,7 +518,7 @@ def process_all(conn=None):
         print(f"自动备份失败（继续执行）: {e}")
 
     if conn is None:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_conn()
     print("=" * 50)
     print("开始邮件解析与线程重组...")
     print("=" * 50)

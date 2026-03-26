@@ -11,12 +11,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config.settings import IMAP_SERVER, IMAP_PORT, IMAP_USE_SSL, DB_PATH
 
 
+def get_db_conn(timeout=60):
+    """获取数据库连接（统一入口，全局 busy_timeout）"""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=timeout)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=60000")  # 写锁等待60秒
+    return conn
+
+
 def init_database():
     """初始化SQLite数据库"""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")  # 等待60秒
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS emails (
@@ -104,7 +110,7 @@ def init_database():
 def get_setting(key, default=None):
     """从数据库读取配置，不存在则返回默认值"""
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = get_db_conn()
         cursor = conn.cursor()
         cursor.execute('SELECT value FROM app_settings WHERE key = ?', (key,))
         row = cursor.fetchone()
@@ -116,7 +122,7 @@ def get_setting(key, default=None):
 
 def save_setting(key, value):
     """保存配置到数据库"""
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = get_db_conn()
     conn.execute('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', (key, value))
     conn.commit()
     conn.close()
@@ -754,7 +760,7 @@ def fetch_customer_emails(account_email, password, customer_email, task_id=None,
 
 def create_task(description, task_type='fetch'):
     """创建后台任务记录"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO tasks (task_type, description, status, created_at)
@@ -768,7 +774,7 @@ def create_task(description, task_type='fetch'):
 
 def finish_task(task_id, result=''):
     """完成后台任务"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute('''
         UPDATE tasks SET status='done', result=?, finished_at=? WHERE id=?
@@ -779,7 +785,7 @@ def finish_task(task_id, result=''):
 
 def fail_task(task_id, error=''):
     """标记任务失败"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute('''
         UPDATE tasks SET status='failed', result=?, finished_at=? WHERE id=?
@@ -790,7 +796,7 @@ def fail_task(task_id, error=''):
 
 def cleanup_zombie_tasks():
     """清理所有stuck为running状态的僵尸任务"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE tasks SET status='failed', result='进程异常退出（自动清理）', finished_at=?
@@ -804,7 +810,7 @@ def cleanup_zombie_tasks():
 
 def get_running_tasks():
     """获取正在运行的任务"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT id, task_type, description, progress_current, progress_total, progress_text, created_at FROM tasks WHERE status='running'")
     tasks = cursor.fetchall()
@@ -814,7 +820,7 @@ def get_running_tasks():
 
 def get_recent_tasks(limit=10):
     """获取最近的任务（含已完成）"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT id, task_type, description, status, progress_current, progress_total, progress_text, result, created_at, finished_at FROM tasks ORDER BY id DESC LIMIT ?", (limit,))
     tasks = cursor.fetchall()
@@ -824,7 +830,7 @@ def get_recent_tasks(limit=10):
 
 def delete_old_tasks(keep=20):
     """清理历史任务，只保留最近 keep 条"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM tasks")
     total = cursor.fetchone()[0]
@@ -840,7 +846,7 @@ def delete_old_tasks(keep=20):
 
 def cancel_task(task_id):
     """取消运行中的任务"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("UPDATE tasks SET status='cancelled', result='用户手动取消', finished_at=? WHERE id=? AND status='running'",
                    (datetime.now().isoformat(), task_id))
@@ -852,7 +858,7 @@ def cancel_task(task_id):
 
 def get_sync_status():
     """获取所有账号的同步状态"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT account, folder, total_on_server, fetched_count, last_sync
@@ -867,7 +873,7 @@ def get_email_stats():
     """获取数据库中的邮件统计"""
     if not os.path.exists(DB_PATH):
         return None
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_conn()
     cursor = conn.cursor()
 
     stats = {}

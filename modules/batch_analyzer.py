@@ -7,13 +7,13 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from config.settings import DB_PATH
-from modules.email_fetcher import create_task, finish_task, fail_task
+from modules.email_fetcher import create_task, finish_task, fail_task, get_db_conn
 from modules.ai_analyzer import analyze_customer, init_analysis_tables
 
 
 def get_top_unanalyzed(limit=10):
     """获取邮件数最多的未分析客户"""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = get_db_conn()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT c.email, c.name, c.domain, c.email_count
@@ -49,7 +49,7 @@ def run_batch_analysis(customer_emails=None, limit=10):
     total = len(customer_emails)
     task_id = create_task(f"批量分析 {total} 个客户", task_type='batch_analyze')
 
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = get_db_conn()
     init_analysis_tables(conn)
 
     succeeded = 0

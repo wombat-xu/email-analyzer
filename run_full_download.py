@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import sqlite3
 import time
 from config.settings import DB_PATH
-from modules.email_fetcher import create_task, finish_task, fail_task, cleanup_zombie_tasks, fetch_all_emails, get_all_accounts
+from modules.email_fetcher import create_task, finish_task, fail_task, cleanup_zombie_tasks, fetch_all_emails, get_all_accounts, get_db_conn
 from modules.email_parser import process_all
 
 # 同时输出到终端和 worker.log
@@ -56,7 +56,7 @@ try:
         print(f"\n{'='*50}")
         print(f"[{i+1}/{len(accounts)}] 下载 {acc_email} ({acc_name})")
 
-        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn = get_db_conn()
         c = conn.cursor()
         c.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
                   (i, len(accounts), f"正在下载 {acc_email}（{i+1}/{len(accounts)}）", task_id))
