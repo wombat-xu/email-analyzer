@@ -86,7 +86,7 @@ def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, em
     def _card(title, content, color='#1976D2'):
         return (f'<div style="margin:16px 0">'
                 f'<div style="background:{color};color:white;padding:8px 16px;border-radius:8px 8px 0 0;font-size:16px;font-weight:bold">{title}</div>'
-                f'<div style="border:1px solid #e0e0e0;border-top:none;border-radius:0 0 8px 8px;padding:12px 16px;color:#333;background:#fafafa">{content}</div></div>')
+                f'<div style="border:1px solid rgba(128,128,128,0.3);border-top:none;border-radius:0 0 8px 8px;padding:12px 16px">{content}</div></div>')
 
     def _kv_rows(data, labels):
         rows = ''
@@ -94,8 +94,8 @@ def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, em
             label = labels.get(k, k)
             if not v or v == '未知':
                 continue
-            rows += (f'<div style="display:flex;padding:6px 0;border-bottom:1px solid #f5f5f5">'
-                     f'<div style="width:140px;font-weight:bold;color:#555;flex-shrink:0">{label}</div>'
+            rows += (f'<div style="display:flex;padding:8px 0;border-bottom:1px solid rgba(128,128,128,0.2)">'
+                     f'<div style="width:140px;font-weight:bold;opacity:0.7;flex-shrink:0">{label}</div>'
                      f'<div style="flex:1;line-height:1.6">{v}</div></div>')
         return rows
 
@@ -109,7 +109,7 @@ def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, em
     # 感兴趣的产品
     products = profile.get('products_of_interest', [])
     if products:
-        tags = ''.join(f'<span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:4px 12px;'
+        tags = ''.join(f'<span style="display:inline-block;background:rgba(33,150,243,0.15);padding:4px 12px;'
                        f'border-radius:16px;margin:3px;font-size:13px">{p}</span>' for p in products)
         h.append(_card('🏷️ 感兴趣的产品', tags, '#0288D1'))
 
@@ -128,17 +128,17 @@ def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, em
     # 应对策略
     strat = profile.get('strategy_recommendation', {})
     if strat:
-        s = f'<div style="background:#e8f5e9;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:14px;line-height:1.6">{strat.get("approach","")}</div>'
+        s = f'<div style="background:rgba(76,175,80,0.1);padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:14px;line-height:1.6">{strat.get("approach","")}</div>'
         s += '<div style="display:flex;gap:16px;flex-wrap:wrap">'
-        s += '<div style="flex:1;min-width:200px"><div style="font-weight:bold;color:#2e7d32;margin-bottom:4px">✅ 应该做</div><ul style="margin:0;padding-left:20px">'
+        s += '<div style="flex:1;min-width:200px"><div style="font-weight:bold;margin-bottom:4px">✅ 应该做</div><ul style="margin:0;padding-left:20px">'
         for item in strat.get('dos', []):
             s += f'<li style="margin:4px 0;line-height:1.5">{item}</li>'
         s += '</ul></div>'
-        s += '<div style="flex:1;min-width:200px"><div style="font-weight:bold;color:#c62828;margin-bottom:4px">❌ 不应该做</div><ul style="margin:0;padding-left:20px">'
+        s += '<div style="flex:1;min-width:200px"><div style="font-weight:bold;margin-bottom:4px">❌ 不应该做</div><ul style="margin:0;padding-left:20px">'
         for item in strat.get('donts', []):
             s += f'<li style="margin:4px 0;line-height:1.5">{item}</li>'
         s += '</ul></div></div>'
-        s += '<div style="margin-top:12px"><div style="font-weight:bold;color:#1565c0;margin-bottom:4px">📋 建议下一步</div><ul style="margin:0;padding-left:20px">'
+        s += '<div style="margin-top:12px"><div style="font-weight:bold;margin-bottom:4px">📋 建议下一步</div><ul style="margin:0;padding-left:20px">'
         for item in strat.get('next_steps', []):
             s += f'<li style="margin:4px 0;line-height:1.5">{item}</li>'
         s += '</ul></div>'
@@ -162,31 +162,31 @@ def generate_report_html(profile, email_addr, analyzed_at='', thread_count=0, em
         for convo in convos:
             topic = convo.get("topic", "") or "对话"
             date = convo.get("date", "")
-            c += (f'<details style="margin-bottom:10px;border:1px solid #ccc;border-radius:6px">'
-                  f'<summary style="cursor:pointer;padding:10px 14px;background:#f0f0f0;color:#333;font-weight:bold;border-radius:6px">'
+            c += (f'<details style="margin-bottom:10px;border:1px solid rgba(128,128,128,0.3);border-radius:6px">'
+                  f'<summary style="cursor:pointer;padding:10px 14px;background:rgba(128,128,128,0.1);font-weight:bold;border-radius:6px">'
                   f'📌 {topic} ({date})</summary>'
-                  f'<div style="padding:10px 14px;color:#333">')
+                  f'<div style="padding:10px 14px">')
             c += f'<p><b>概况</b>：{convo.get("summary","")}</p>'
             c += f'<p><b>结果</b>：{convo.get("outcome","")}</p>'
             for rnd in convo.get('negotiation_rounds', []):
                 c += f'<div style="font-weight:bold;margin:10px 0 4px">第 {rnd.get("round","")} 轮</div>'
                 if rnd.get('customer_said'):
-                    c += (f'<div style="background:#e8f4fd;padding:10px 14px;border-left:4px solid #2196F3;'
+                    c += (f'<div style="background:rgba(33,150,243,0.1);padding:10px 14px;border-left:4px solid #2196F3;'
                           f'border-radius:4px;margin:6px 0;font-size:13px;line-height:1.7;white-space:pre-wrap">'
                           f'🔵 <b>客户</b>：{rnd["customer_said"]}</div>')
                 if rnd.get('customer_said_cn'):
-                    c += f'<div style="background:#f5f5f5;padding:6px 14px;border-radius:4px;font-size:12px;color:#666;margin:0 0 6px">💬 {rnd["customer_said_cn"]}</div>'
+                    c += f'<div style="background:rgba(128,128,128,0.08);padding:6px 14px;border-radius:4px;font-size:12px;opacity:0.7;margin:0 0 6px">💬 {rnd["customer_said_cn"]}</div>'
                 if rnd.get('our_response'):
-                    c += (f'<div style="background:#e8f5e9;padding:10px 14px;border-left:4px solid #4CAF50;'
+                    c += (f'<div style="background:rgba(76,175,80,0.1);padding:10px 14px;border-left:4px solid #4CAF50;'
                           f'border-radius:4px;margin:6px 0;font-size:13px;line-height:1.7;white-space:pre-wrap">'
                           f'🟢 <b>我方</b>：{rnd["our_response"]}</div>')
                 if rnd.get('our_response_cn'):
-                    c += f'<div style="background:#f5f5f5;padding:6px 14px;border-radius:4px;font-size:12px;color:#666;margin:0 0 6px">💬 {rnd["our_response_cn"]}</div>'
+                    c += f'<div style="background:rgba(128,128,128,0.08);padding:6px 14px;border-radius:4px;font-size:12px;opacity:0.7;margin:0 0 6px">💬 {rnd["our_response_cn"]}</div>'
                 if rnd.get('highlight'):
-                    c += f'<div style="background:#fff3e0;padding:6px 14px;border-radius:4px;margin:6px 0;font-size:13px">💡 <b>要点</b>：{rnd["highlight"]}</div>'
+                    c += f'<div style="background:rgba(255,152,0,0.1);padding:6px 14px;border-radius:4px;margin:6px 0;font-size:13px">💡 <b>要点</b>：{rnd["highlight"]}</div>'
             lesson = convo.get('lesson_learned', '')
             if lesson:
-                c += f'<div style="background:#e3f2fd;padding:8px 14px;border-radius:4px;margin-top:8px;font-size:13px">📚 <b>经验总结</b>：{lesson}</div>'
+                c += f'<div style="background:rgba(33,150,243,0.1);padding:8px 14px;border-radius:4px;margin-top:8px;font-size:13px">📚 <b>经验总结</b>：{lesson}</div>'
             c += '</div></details>'
         h.append(_card('⚔️ 关键对话复盘', c, '#455A64'))
 
