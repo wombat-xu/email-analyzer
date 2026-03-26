@@ -6,6 +6,7 @@ import os
 import sys
 import subprocess
 import pandas as pd
+import time
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -513,7 +514,8 @@ def show_dashboard():
 
 
 def launch_background_task(customer_emails, do_analyze=True, merge_keyword=None):
-    """启动后台任务（独立进程，不受页面刷新影响）"""
+    """启动后台任务（独立进程，不受页面刷新影响）
+    自动检测本地是否有邮件，有则跳过 IMAP 拉取直接分析"""
     import subprocess
     project_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     worker = os.path.join(project_dir, 'modules', 'background_worker.py')
@@ -540,11 +542,26 @@ def show_top_customers():
 
     st.subheader("🏆 TOP 客户（按邮件数量排名）")
 
-    # === 后台任务状态（只显示最新的一个running任务） ===
+    # === 分析统计概览 ===
+    cursor.execute("SELECT COUNT(*) FROM customers WHERE is_internal=0 AND contact_type='customer' AND email_count>=3")
+    total_customers = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT COUNT(DISTINCT cp.customer_email) FROM customer_profiles cp
+        JOIN customers c ON cp.customer_email = c.email
+        WHERE c.is_internal=0 AND c.contact_type='customer'
+    """)
+    analyzed_count = cursor.fetchone()[0]
+    pending_count = total_customers - analyzed_count
+
+    mcol1, mcol2, mcol3 = st.columns(3)
+    mcol1.metric("符合条件客户", f"{total_customers}")
+    mcol2.metric("已分析", f"{analyzed_count}")
+    mcol3.metric("待分析", f"{pending_count}")
+
+    # === 后台任务状态 ===
     from modules.email_fetcher import get_running_tasks, get_recent_tasks
     running = get_running_tasks()
     if running:
-        # 只取最新的一个
         t = running[-1]
         task_id, task_type, desc, cur, total, text, created = t
         st.markdown("#### 🔄 正在进行的后台任务")
@@ -557,12 +574,37 @@ def show_top_customers():
             st.rerun()
         st.divider()
 
-    recent = get_recent_tasks(3)
+    recent = get_recent_tasks(5)
     done_tasks = [t for t in recent if t[3] == 'done']
     if done_tasks:
-        t = done_tasks[0]
-        st.success(f"✅ **{t[2]}** — {t[7] or '完成'} （{(t[9] or '')[:19]}）")
+        with st.expander(f"✅ 最近完成的任务（{len(done_tasks)} 个）", expanded=False):
+            for t in done_tasks:
+                st.markdown(f"- **{t[2]}** — {t[7] or '完成'} （{(t[9] or '')[:19]}）")
         st.divider()
+
+    # === 一键批量分析 ===
+    st.subheader("⚡ 一键批量分析")
+    st.caption("自动选择邮件数最多的未分析客户，依次进行 AI 分析（跳过已分析的）")
+
+    bcol1, bcol2 = st.columns([1, 3])
+    with bcol1:
+        batch_size = st.selectbox("分析数量", [10, 20, 50], key="batch_size")
+    with bcol2:
+        if st.button(f"🚀 批量分析 TOP {batch_size} 待分析客户", type="primary", key="btn_batch"):
+            if not running:
+                import subprocess
+                project_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+                log_file = os.path.join(project_dir, 'data', 'worker.log')
+                cmd = [sys.executable, os.path.join(project_dir, 'modules', 'batch_analyzer.py'), '--limit', str(batch_size)]
+                subprocess.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=subprocess.STDOUT, start_new_session=True)
+                st.success(f"✅ 已启动批量分析任务！将依次分析 TOP {batch_size} 未分析客户")
+                st.info("任务在后台运行，刷新页面查看进度。每个客户约 1-2 分钟。")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.warning("已有任务在运行中，请等待完成后再提交")
+
+    st.divider()
 
     # === TOP 客户表格 ===
     cursor.execute("""
