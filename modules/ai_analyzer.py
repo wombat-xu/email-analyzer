@@ -230,6 +230,15 @@ def estimate_customer_cost(conn, customer_emails):
 
 def analyze_customer(conn, customer_email, client=None):
     """使用AI分析单个客户"""
+    # 首次分析时自动备份（通过标记避免重复备份）
+    if not getattr(analyze_customer, '_backed_up', False):
+        try:
+            from modules.db_backup import create_backup
+            create_backup(reason="before_ai_analysis")
+            analyze_customer._backed_up = True
+        except Exception as e:
+            print(f"自动备份失败（继续执行）: {e}")
+
     if client is None:
         client = get_ai_client()
 

@@ -17,7 +17,13 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "sk-or-v1-8a45aaa13851
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # 数据库路径
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "emails.db")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+DB_PATH = os.path.join(DATA_DIR, "emails.db")
+
+# 备份配置
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")  # 本地备份目录
+EXTERNAL_BACKUP_DIR = None  # 外部备份路径，如 "/Volumes/MyDisk/email-backups"
+MAX_BACKUPS = 5  # 最多保留几份本地备份
 
 # AI 分析配置
 AI_MODEL = "anthropic/claude-opus-4-6"  # OpenRouter 模型名

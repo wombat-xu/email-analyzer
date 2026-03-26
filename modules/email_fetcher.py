@@ -220,12 +220,15 @@ def get_email_body(msg):
 
 
 def connect_imap(email_addr, password):
-    """连接到IMAP服务器"""
+    """连接到IMAP服务器（带 socket 超时）"""
+    import socket
     print(f"正在连接 {IMAP_SERVER}:{IMAP_PORT} ...")
     if IMAP_USE_SSL:
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=120)
     else:
-        mail = imaplib.IMAP4(IMAP_SERVER, IMAP_PORT)
+        mail = imaplib.IMAP4(IMAP_SERVER, IMAP_PORT, timeout=120)
+    # 设置 socket 级别超时，防止 recv() 永远阻塞
+    mail.socket().settimeout(120)
 
     print(f"正在登录 {email_addr} ...")
     mail.login(email_addr, password)
@@ -328,68 +331,101 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None,
     ''', (account_email, folder_name, total, account_email, folder_name, datetime.now().isoformat()))
 
     # 预加载已有的 message_id 到内存（避免逐条查数据库）
+    # 加载本文件夹的已有ID
     cursor.execute('SELECT message_id FROM emails WHERE account = ? AND folder = ?', (account_email, folder_name))
     existing_ids = set(r[0] for r in cursor.fetchall())
+    # 也加载全局所有message_id用于跳过跨文件夹重复
+    cursor.execute('SELECT message_id FROM emails')
+    all_existing_ids = set(r[0] for r in cursor.fetchall())
     estimated_new = to_fetch - len(existing_ids)
-    print(f"    该文件夹已有 {len(existing_ids)} 封，需下载约 {estimated_new} 封")
+    print(f"    该文件夹已有 {len(existing_ids)} 封，全局已有 {len(all_existing_ids)} 封，需下载约 {estimated_new} 封")
 
     # 如果已有数量 >= 服务器总数的95%，跳过此文件夹（已基本完成）
     if len(existing_ids) >= total * 0.95 and estimated_new < 50:
         print(f"    ✓ 已基本完成，跳过")
         return 0, mail
 
+    # 批量获取 Message-ID 头（每次200封，大幅减少IMAP请求次数）
+    BATCH_SIZE = 200
     fetched = 0
     skipped = 0
     consecutive_errors = 0
-    for i, msg_id in enumerate(msg_ids):
-        try:
-            # 先只获取 Message-ID 头（极快，不下载正文）
-            try:
-                status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
-            except Exception as fetch_err:
-                new_mail = _reconnect(mail)
-                if new_mail is None:
-                    consecutive_errors += 1
-                    if consecutive_errors >= 3:
-                        print(f"    连续 {consecutive_errors} 次失败，放弃此文件夹")
-                        break
-                    continue
-                mail = new_mail
-                consecutive_errors = 0
-                try:
-                    status, header_data = mail.fetch(msg_id, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
-                except Exception:
-                    continue
-            if status != 'OK':
-                continue
+    need_download = []  # 需要下载完整内容的 (msg_id, message_id)
 
-            # 解析 Message-ID
-            mid = ''
-            if header_data and header_data[0] and len(header_data[0]) > 1:
-                raw = header_data[0][1]
+    print(f"    批量扫描 Message-ID（每批 {BATCH_SIZE} 封）...")
+    for batch_start in range(0, to_fetch, BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, to_fetch)
+        batch_ids = msg_ids[batch_start:batch_end]
+        batch_str = b','.join(batch_ids)
+
+        try:
+            status, batch_data = mail.fetch(batch_str, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+        except Exception as fetch_err:
+            new_mail = _reconnect(mail)
+            if new_mail is None:
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    print(f"    连续 {consecutive_errors} 次批量获取失败，放弃此文件夹")
+                    break
+                continue
+            mail = new_mail
+            consecutive_errors = 0
+            try:
+                status, batch_data = mail.fetch(batch_str, '(BODY[HEADER.FIELDS (MESSAGE-ID)])')
+            except Exception:
+                continue
+        if status != 'OK':
+            continue
+        consecutive_errors = 0
+
+        # 解析批量返回的 Message-ID
+        batch_idx = 0
+        for item in batch_data:
+            if isinstance(item, tuple) and len(item) >= 2:
+                raw = item[1]
+                mid = ''
                 if isinstance(raw, bytes):
                     text = raw.decode('utf-8', errors='replace')
                     for line in text.split('\n'):
                         if 'message-id' in line.lower():
                             mid = line.split(':', 1)[-1].strip()
                             break
-            if not mid:
-                mid = f"generated-{account_email}-{folder_name}-{msg_id.decode()}"
+                # 从响应中提取IMAP序号
+                seq_num = None
+                if isinstance(item[0], bytes):
+                    seq_str = item[0].decode('utf-8', errors='replace')
+                    parts = seq_str.split()
+                    if parts:
+                        try:
+                            seq_num = parts[0].encode()
+                        except Exception:
+                            pass
+                if not mid and seq_num:
+                    mid = f"generated-{account_email}-{folder_name}-{seq_num.decode()}"
+                elif not mid:
+                    batch_idx += 1
+                    continue
 
-            # 内存中快速判断是否已存在
-            if mid in existing_ids:
-                skipped += 1
-                # 快速跳过，不下载完整邮件
-                if (i + 1) % 1000 == 0:
-                    progress_text = f"[{folder_name}] 扫描 {i+1}/{to_fetch}，跳过 {skipped}，新增 {fetched}"
-                    print(f"    {progress_text}")
-                    if task_id:
-                        cursor.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
-                                       (i + 1, to_fetch, progress_text, task_id))
-                        conn.commit()
-                continue
+                if mid in existing_ids or mid in all_existing_ids:
+                    skipped += 1
+                else:
+                    if seq_num:
+                        need_download.append((seq_num, mid))
+                batch_idx += 1
 
-            # 新邮件：下载完整内容
+        if (batch_end) % 2000 == 0 or batch_end == to_fetch:
+            progress_text = f"[{folder_name}] 扫描 {batch_end}/{to_fetch}，跳过 {skipped}，待下载 {len(need_download)}"
+            print(f"    {progress_text}")
+            if task_id:
+                cursor.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
+                               (batch_end, to_fetch, progress_text, task_id))
+                conn.commit()
+
+    print(f"    扫描完成！跳过 {skipped}，需下载 {len(need_download)} 封")
+
+    # 逐封下载需要的邮件
+    for dl_idx, (msg_id, mid) in enumerate(need_download):
+        try:
             try:
                 status, msg_data = mail.fetch(msg_id, '(RFC822)')
             except Exception as fetch_err:
@@ -397,7 +433,7 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None,
                 if new_mail is None:
                     consecutive_errors += 1
                     if consecutive_errors >= 3:
-                        print(f"    连续 {consecutive_errors} 次失败，放弃此文件夹")
+                        print(f"    连续 {consecutive_errors} 次失败，放弃剩余下载")
                         break
                     continue
                 mail = new_mail
@@ -450,15 +486,15 @@ def fetch_emails_from_folder(mail, folder_name, account_email, conn, limit=None,
                 print(f"    DB LOCKED: {e}")
             continue
 
-        if (i + 1) % 200 == 0:
+        if (dl_idx + 1) % 50 == 0:
             conn.commit()
-            progress_text = f"[{folder_name}] {i+1}/{to_fetch}，新增 {fetched}，跳过 {skipped}"
+            progress_text = f"[{folder_name}] 下载 {dl_idx+1}/{len(need_download)}，已入库 {fetched}"
             print(f"    {progress_text}")
             if progress_callback:
-                progress_callback(i + 1, to_fetch, progress_text)
+                progress_callback(dl_idx + 1, len(need_download), progress_text)
             if task_id:
                 cursor.execute('UPDATE tasks SET progress_current=?, progress_total=?, progress_text=? WHERE id=?',
-                               (i + 1, to_fetch, progress_text, task_id))
+                               (dl_idx + 1, len(need_download), progress_text, task_id))
                 conn.commit()
 
     conn.commit()

@@ -509,6 +509,13 @@ def get_all_external_customers(conn, contact_type='customer'):
 
 def process_all(conn=None):
     """执行完整的解析和线程构建流程"""
+    # 操作前自动备份
+    try:
+        from modules.db_backup import create_backup
+        create_backup(reason="before_parse")
+    except Exception as e:
+        print(f"自动备份失败（继续执行）: {e}")
+
     if conn is None:
         conn = sqlite3.connect(DB_PATH)
     print("=" * 50)

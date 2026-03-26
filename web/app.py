@@ -260,6 +260,44 @@ def show_account_management():
                 process_all()
             st.success("邮件解析完成！")
 
+    # 数据库备份管理
+    st.divider()
+    st.subheader("💾 数据库备份管理")
+    from modules.db_backup import create_backup, restore_backup, list_backups
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📸 立即创建备份", type="primary"):
+            with st.spinner("正在创建备份..."):
+                path = create_backup(reason="manual")
+            st.success(f"备份完成: {os.path.basename(path)}")
+            st.rerun()
+
+    # 显示备份列表
+    backups = list_backups()
+    if backups:
+        data = []
+        for name, path, size, mtime, location in backups:
+            data.append({
+                "文件名": name,
+                "大小": f"{size:.0f} MB",
+                "时间": mtime,
+                "位置": location,
+            })
+        st.dataframe(pd.DataFrame(data), use_container_width=True)
+
+        # 恢复功能
+        with col2:
+            restore_options = {name: path for name, path, _, _, _ in backups}
+            selected = st.selectbox("选择要恢复的备份", list(restore_options.keys()), key="restore_select")
+            if st.button("⚠️ 恢复此备份", key="restore_btn"):
+                with st.spinner("正在恢复..."):
+                    count = restore_backup(restore_options[selected])
+                st.success(f"恢复完成！邮件数: {count}")
+                st.rerun()
+    else:
+        st.info("暂无备份，点击上方按钮创建第一份备份")
+
 
 def show_all_emails():
     """全部邮件浏览"""
