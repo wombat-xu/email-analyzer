@@ -43,7 +43,8 @@ def create_backup(reason="manual"):
         try:
             os.makedirs(EXTERNAL_BACKUP_DIR, exist_ok=True)
             ext_path = os.path.join(EXTERNAL_BACKUP_DIR, filename)
-            shutil.copy2(backup_path, ext_path)
+            # 用 shutil.copy 而非 copy2，避免 exFAT 等文件系统不支持元数据的问题
+            shutil.copy(backup_path, ext_path)
             print(f"已复制到外部: {ext_path}")
         except Exception as e:
             print(f"外部备份失败: {e}")

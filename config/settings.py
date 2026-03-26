@@ -22,7 +22,7 @@ DB_PATH = os.path.join(DATA_DIR, "emails.db")
 
 # 备份配置
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")  # 本地备份目录
-EXTERNAL_BACKUP_DIR = None  # 外部备份路径，如 "/Volumes/MyDisk/email-backups"
+EXTERNAL_BACKUP_DIR = "/Volumes/T9/邮件系统备份"  # 三星T9移动固态硬盘
 MAX_BACKUPS = 5  # 最多保留几份本地备份
 
 # AI 分析配置
