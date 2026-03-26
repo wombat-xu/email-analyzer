@@ -13,22 +13,62 @@ from openai import OpenAI
 from modules.email_parser import get_customer_threads, get_all_external_customers, get_email_text
 
 
+def get_ai_config():
+    """获取AI配置，优先从数据库读取，fallback到settings.py"""
+    from modules.email_fetcher import get_setting
+    return {
+        'api_key': get_setting('openrouter_api_key', OPENROUTER_API_KEY) or os.environ.get("OPENROUTER_API_KEY", ""),
+        'base_url': get_setting('openrouter_base_url', OPENROUTER_BASE_URL),
+        'model': get_setting('ai_model', AI_MODEL),
+        'max_tokens': int(get_setting('max_tokens', str(MAX_TOKENS_PER_ANALYSIS))),
+    }
+
+
 def get_ai_client():
     """获取OpenRouter AI客户端"""
-    api_key = OPENROUTER_API_KEY or os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise ValueError("请设置 OPENROUTER_API_KEY 环境变量！")
+    config = get_ai_config()
+    if not config['api_key']:
+        raise ValueError("请在 Web 界面「邮箱账号管理」中配置 OpenRouter API Key！")
     return OpenAI(
-        base_url=OPENROUTER_BASE_URL,
-        api_key=api_key,
+        base_url=config['base_url'],
+        api_key=config['api_key'],
     )
+
+
+def test_api_key(api_key=None, base_url=None):
+    """测试API Key是否有效，返回 (是否有效, 信息)"""
+    if not api_key:
+        config = get_ai_config()
+        api_key = config['api_key']
+        base_url = config['base_url']
+    if not api_key:
+        return False, "未配置 API Key"
+    try:
+        client = OpenAI(base_url=base_url or OPENROUTER_BASE_URL, api_key=api_key)
+        response = client.chat.completions.create(
+            model="openai/gpt-3.5-turbo",
+            max_tokens=5,
+            messages=[{"role": "user", "content": "hi"}]
+        )
+        return True, "API Key 有效"
+    except Exception as e:
+        err = str(e)
+        if '401' in err:
+            return False, "API Key 无效（401 认证失败）"
+        elif '403' in err:
+            return False, "API Key 权限不足（403）"
+        elif '429' in err:
+            return True, "API Key 有效（当前限流中）"
+        else:
+            return False, f"连接失败: {err[:100]}"
 
 
 def ai_chat(client, prompt, max_tokens=None):
     """调用AI生成回复"""
+    config = get_ai_config()
     response = client.chat.completions.create(
-        model=AI_MODEL,
-        max_tokens=max_tokens or MAX_TOKENS_PER_ANALYSIS,
+        model=config['model'],
+        max_tokens=max_tokens or config['max_tokens'],
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content

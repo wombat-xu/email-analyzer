@@ -90,8 +90,36 @@ def init_database():
             finished_at TEXT
         )
     ''')
+    # 应用配置表 - 存储运行时可修改的配置
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
     conn.commit()
     return conn
+
+
+def get_setting(key, default=None):
+    """从数据库读取配置，不存在则返回默认值"""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM app_settings WHERE key = ?', (key,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+
+def save_setting(key, value):
+    """保存配置到数据库"""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', (key, value))
+    conn.commit()
+    conn.close()
 
 
 def add_email_account(email_addr, password, salesperson_name='', imap_server=None):

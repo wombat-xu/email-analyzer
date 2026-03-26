@@ -49,6 +49,38 @@ def format_date(date_str):
         return s if len(s) >= 8 else '-'
 
 
+def _show_api_status_sidebar():
+    """侧边栏显示 API Key 状态（带缓存）"""
+    from modules.ai_analyzer import get_ai_config, test_api_key
+
+    st.sidebar.divider()
+    config = get_ai_config()
+
+    # 缓存检测结果 5 分钟
+    cache_key = 'api_status_cache'
+    cache_time_key = 'api_status_time'
+    now = time.time()
+
+    if (cache_key in st.session_state and
+        cache_time_key in st.session_state and
+        now - st.session_state[cache_time_key] < 300):
+        ok, msg = st.session_state[cache_key]
+    else:
+        if config['api_key']:
+            ok, msg = test_api_key()
+            st.session_state[cache_key] = (ok, msg)
+            st.session_state[cache_time_key] = now
+        else:
+            ok, msg = False, "未配置 API Key"
+
+    if ok:
+        st.sidebar.success(f"🟢 AI API 正常")
+    else:
+        st.sidebar.error(f"🔴 {msg}")
+
+    st.sidebar.caption(f"模型: {config['model'].split('/')[-1]}")
+
+
 def main():
     st.title("📧 外贸邮件智能分析系统")
     st.caption("个人护理产品 | 客户知识库 & 商机挖掘")
@@ -69,6 +101,9 @@ def main():
         "📥 数据导出"
     ]
     page = st.sidebar.radio("功能导航", pages)
+
+    # === 侧边栏 API 状态指示器 ===
+    _show_api_status_sidebar()
 
     if page == "📊 仪表盘":
         show_dashboard()
@@ -260,6 +295,78 @@ def show_account_management():
                 from modules.email_parser import process_all
                 process_all()
             st.success("邮件解析完成！")
+
+    # AI 配置管理
+    st.divider()
+    st.subheader("🤖 AI 配置管理")
+    st.caption("配置 OpenRouter API，用于客户 AI 分析功能")
+
+    from modules.ai_analyzer import get_ai_config, test_api_key
+    from modules.email_fetcher import get_setting, save_setting
+
+    current_config = get_ai_config()
+
+    ai_col1, ai_col2 = st.columns(2)
+    with ai_col1:
+        new_api_key = st.text_input(
+            "OpenRouter API Key",
+            value=current_config['api_key'] or "",
+            type="password",
+            key="ai_api_key",
+            placeholder="sk-or-v1-..."
+        )
+        new_base_url = st.text_input(
+            "API Base URL",
+            value=current_config['base_url'],
+            key="ai_base_url"
+        )
+    with ai_col2:
+        model_options = [
+            "anthropic/claude-opus-4-6",
+            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-haiku-4-5-20251001",
+            "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "google/gemini-2.5-pro-preview",
+        ]
+        current_model = current_config['model']
+        if current_model not in model_options:
+            model_options.insert(0, current_model)
+        new_model = st.selectbox(
+            "AI 模型",
+            model_options,
+            index=model_options.index(current_model),
+            key="ai_model_select"
+        )
+        new_max_tokens = st.number_input(
+            "每次分析最大 Token",
+            min_value=1000, max_value=100000,
+            value=current_config['max_tokens'],
+            step=1000,
+            key="ai_max_tokens"
+        )
+
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        if st.button("🔍 检测 Key 有效性", key="test_key"):
+            with st.spinner("正在检测..."):
+                ok, msg = test_api_key(api_key=new_api_key, base_url=new_base_url)
+            if ok:
+                st.success(f"🟢 {msg}")
+                # 刷新侧边栏缓存
+                st.session_state.pop('api_status_cache', None)
+            else:
+                st.error(f"🔴 {msg}")
+    with btn_col2:
+        if st.button("💾 保存配置", type="primary", key="save_ai_config"):
+            save_setting('openrouter_api_key', new_api_key)
+            save_setting('openrouter_base_url', new_base_url)
+            save_setting('ai_model', new_model)
+            save_setting('max_tokens', str(new_max_tokens))
+            st.success("配置已保存！")
+            # 清除缓存让侧边栏重新检测
+            st.session_state.pop('api_status_cache', None)
+            st.rerun()
 
     # 数据库备份管理
     st.divider()
