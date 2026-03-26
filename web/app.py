@@ -49,6 +49,25 @@ def format_date(date_str):
         return s if len(s) >= 8 else '-'
 
 
+def get_email_date_range(cursor, where_clause="1=1", params=None):
+    """获取邮件的真实最早/最晚日期（解析原始日期字符串）"""
+    from email.utils import parsedate_to_datetime
+    params = params or []
+    # 从头尾各取200封采样，覆盖最早和最晚
+    dates = []
+    for order in ['id ASC', 'id DESC']:
+        cursor.execute(f"SELECT date FROM emails WHERE {where_clause} AND date != '' ORDER BY {order} LIMIT 200", params)
+        for r in cursor.fetchall():
+            try:
+                dt = parsedate_to_datetime(r[0])
+                dates.append(dt)
+            except Exception:
+                pass
+    if not dates:
+        return '-', '-'
+    return min(dates).strftime('%Y-%m-%d'), max(dates).strftime('%Y-%m-%d')
+
+
 def _show_api_status_sidebar():
     """侧边栏显示 API Key 状态（带缓存）"""
     from modules.ai_analyzer import get_ai_config, test_api_key
@@ -149,10 +168,7 @@ def show_account_management():
                 acc_email, acc_pwd, acc_imap, acc_name, last_sync, is_active = a
                 cursor.execute("SELECT COUNT(*) FROM emails WHERE account = ?", (acc_email,))
                 email_count = cursor.fetchone()[0]
-                cursor.execute("SELECT MIN(date), MAX(date) FROM emails WHERE account = ?", (acc_email,))
-                date_row = cursor.fetchone()
-                earliest = format_date(date_row[0]) if date_row[0] else "-"
-                latest = format_date(date_row[1]) if date_row[1] else "-"
+                earliest, latest = get_email_date_range(cursor, "account = ?", [acc_email])
 
                 with st.container():
                     c1, c2, c3, c4 = st.columns([3, 2, 3, 2])
@@ -254,18 +270,17 @@ def show_account_management():
                 acc_email, acc_pwd, acc_imap, acc_name, last_sync, _ = a
                 cursor.execute("SELECT COUNT(*) FROM emails WHERE account = ?", (acc_email,))
                 cnt = cursor.fetchone()[0]
-                cursor.execute("SELECT MIN(date), MAX(date) FROM emails WHERE account = ?", (acc_email,))
-                dr = cursor.fetchone()
                 cursor.execute("SELECT COUNT(DISTINCT folder) FROM emails WHERE account = ?", (acc_email,))
                 folder_cnt = cursor.fetchone()[0]
+                acc_earliest, acc_latest = get_email_date_range(cursor, "account = ?", [acc_email])
                 total_all += cnt
 
                 st.markdown(f"#### {acc_email}（{acc_name or '-'}）")
                 mc1, mc2, mc3, mc4 = st.columns(4)
                 mc1.metric("本地邮件数", f"{cnt:,}")
                 mc2.metric("文件夹数", folder_cnt)
-                mc3.caption(f"最早: {format_date(dr[0]) if dr[0] else '-'}")
-                mc3.caption(f"最晚: {format_date(dr[1]) if dr[1] else '-'}")
+                mc3.caption(f"最早: {acc_earliest}")
+                mc3.caption(f"最晚: {acc_latest}")
                 mc4.caption(f"最后同步: {(last_sync or '未同步')[:19]}")
 
                 bc1, bc2 = st.columns(2)
@@ -1030,11 +1045,13 @@ def show_customer_detail():
 
     # === 数据来源说明 ===
     # 总体统计
-    cursor.execute("""
-        SELECT COUNT(*), MIN(date), MAX(date)
-        FROM emails WHERE from_addr LIKE ? OR to_addr LIKE ?
-    """, (f"%{email_addr}%", f"%{email_addr}%"))
-    total_count, earliest, latest = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) FROM emails WHERE from_addr LIKE ? OR to_addr LIKE ?",
+                   (f"%{email_addr}%", f"%{email_addr}%"))
+    total_count = cursor.fetchone()[0]
+    earliest, latest = get_email_date_range(
+        cursor, "from_addr LIKE ? OR to_addr LIKE ?",
+        [f"%{email_addr}%", f"%{email_addr}%"]
+    )
 
     # 按公司邮箱拆分统计
     cursor.execute("SELECT DISTINCT account FROM emails ORDER BY account")
@@ -1049,8 +1066,8 @@ def show_customer_detail():
 
     # 数据来源信息
     if total_count > 0:
-        earliest_fmt = format_date(earliest) if earliest else "未知"
-        latest_fmt = format_date(latest) if latest else "未知"
+        earliest_fmt = earliest if earliest != '-' else "未知"
+        latest_fmt = latest if latest != '-' else "未知"
         if has_profile:
             analyzed_at = (profile_row[1] or '')[:19]
             st.markdown(f"### 📊 基于 **{earliest_fmt}** 至 **{latest_fmt}** 的 **{total_count:,}** 封邮件分析所得")
@@ -1062,17 +1079,19 @@ def show_customer_detail():
         # 按邮箱账号拆分
         account_stats = []
         for acc in accounts:
-            cursor.execute("""
-                SELECT COUNT(*), MIN(date), MAX(date) FROM emails
-                WHERE account = ? AND (from_addr LIKE ? OR to_addr LIKE ?)
-            """, (acc, f"%{email_addr}%", f"%{email_addr}%"))
-            cnt, acc_min, acc_max = cursor.fetchone()
+            cursor.execute("SELECT COUNT(*) FROM emails WHERE account = ? AND (from_addr LIKE ? OR to_addr LIKE ?)",
+                           (acc, f"%{email_addr}%", f"%{email_addr}%"))
+            cnt = cursor.fetchone()[0]
             if cnt > 0:
+                acc_e, acc_l = get_email_date_range(
+                    cursor, "account = ? AND (from_addr LIKE ? OR to_addr LIKE ?)",
+                    [acc, f"%{email_addr}%", f"%{email_addr}%"]
+                )
                 account_stats.append({
                     "公司邮箱": acc,
                     "邮件数": cnt,
-                    "最早邮件": format_date(acc_min) if acc_min else "-",
-                    "最晚邮件": format_date(acc_max) if acc_max else "-",
+                    "最早邮件": acc_e,
+                    "最晚邮件": acc_l,
                 })
         if account_stats:
             st.dataframe(pd.DataFrame(account_stats), use_container_width=True, hide_index=True)
