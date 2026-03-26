@@ -126,308 +126,280 @@ def main():
 
 
 def show_account_management():
-    """邮箱账号管理"""
+    """邮箱账号管理 - Tabs 分组"""
     from modules.email_fetcher import (add_email_account, get_all_accounts, remove_email_account,
-                                       get_sync_status, get_running_tasks, get_recent_tasks)
+                                       get_running_tasks, get_recent_tasks, cancel_task, delete_old_tasks)
 
-    st.subheader("⚙️ 邮箱账号管理")
-    st.caption("配置公司业务员的邮箱账号，系统会从所有账号中拉取邮件进行分析")
+    st.subheader("⚙️ 系统管理")
 
-    # 显示已配置的账号
+    tab_acc, tab_sync, tab_task, tab_ai, tab_backup = st.tabs([
+        "📮 邮箱账号", "📥 邮件同步", "📋 任务管理", "🤖 AI 配置", "💾 数据库备份"
+    ])
+
     accounts = get_all_accounts()
-    if accounts:
-        st.markdown("### 已配置的邮箱账号")
-        data = [{
-            "邮箱": a[0],
-            "业务员": a[3] or "-",
-            "IMAP服务器": a[2],
-            "最后同步": (a[4] or "未同步")[:19],
-        } for a in accounts]
-        st.dataframe(pd.DataFrame(data), use_container_width=True)
 
-        # 删除账号
-        del_email = st.selectbox("选择要删除的账号", [a[0] for a in accounts])
-        if st.button("🗑️ 删除选中账号"):
-            remove_email_account(del_email)
-            st.success(f"已删除 {del_email}")
-            st.rerun()
-    else:
-        st.info("还没有配置任何邮箱账号，请在下方添加。")
+    # ====== Tab 1: 邮箱账号 ======
+    with tab_acc:
+        if accounts:
+            st.markdown("#### 已配置的邮箱账号")
+            # 每个账号一行，带统计和操作
+            conn = get_db()
+            cursor = conn.cursor()
+            for a in accounts:
+                acc_email, acc_pwd, acc_imap, acc_name, last_sync, is_active = a
+                cursor.execute("SELECT COUNT(*) FROM emails WHERE account = ?", (acc_email,))
+                email_count = cursor.fetchone()[0]
+                cursor.execute("SELECT MIN(date), MAX(date) FROM emails WHERE account = ?", (acc_email,))
+                date_row = cursor.fetchone()
+                earliest = format_date(date_row[0]) if date_row[0] else "-"
+                latest = format_date(date_row[1]) if date_row[1] else "-"
 
-    st.divider()
-
-    # 添加新账号
-    st.markdown("### 添加邮箱账号")
-    col1, col2 = st.columns(2)
-    with col1:
-        new_email = st.text_input("邮箱地址", placeholder="sales@meinuo.com")
-        new_password = st.text_input("密码/授权码", type="password")
-    with col2:
-        new_name = st.text_input("业务员姓名", placeholder="张三")
-        new_imap = st.text_input("IMAP服务器", value="imaphz.qiye.163.com")
-
-    if st.button("➕ 添加账号", type="primary"):
-        if new_email and new_password:
-            # 测试连接
-            with st.spinner("正在测试连接..."):
-                try:
-                    from modules.email_fetcher import connect_imap
-                    import imaplib
-                    if new_imap != "imaphz.qiye.163.com":
-                        mail = imaplib.IMAP4_SSL(new_imap, 993)
-                        mail.login(new_email, new_password)
-                        mail.logout()
-                    else:
-                        mail = connect_imap(new_email, new_password)
-                        mail.logout()
-                    add_email_account(new_email, new_password, new_name, new_imap)
-                    st.success(f"✅ {new_email} 添加成功！连接测试通过。")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"连接失败: {e}。请检查邮箱地址、密码和IMAP服务器是否正确。")
+                with st.container():
+                    c1, c2, c3, c4 = st.columns([3, 2, 3, 2])
+                    c1.markdown(f"**{acc_email}**")
+                    c1.caption(f"业务员: {acc_name or '-'}　|　IMAP: {acc_imap}")
+                    c2.metric("本地邮件数", f"{email_count:,}")
+                    c3.caption(f"时间范围: {earliest} ~ {latest}")
+                    c3.caption(f"最后同步: {(last_sync or '未同步')[:19]}")
+                    c4.write("")  # 占位
+                st.divider()
+            conn.close()
         else:
-            st.warning("请填写邮箱地址和密码")
+            st.info("还没有配置任何邮箱账号，请在下方添加。")
 
-    st.divider()
-
-    # 同步状态
-    st.markdown("### 📊 同步状态")
-    sync_data = get_sync_status()
-    if sync_data:
-        rows = []
-        for s in sync_data:
-            pct = round(s[3] / s[2] * 100, 1) if s[2] > 0 else 0
-            rows.append({
-                "账号": s[0], "文件夹": s[1],
-                "服务器总数": s[2], "已拉取": s[3],
-                "进度": f"{pct}%",
-                "最后同步": (s[4] or "-")[:19]
-            })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-    else:
-        st.caption("还没有同步过邮件")
-
-    st.divider()
-
-    # 后台任务监控（只显示最新的一个）
-    running = get_running_tasks()
-    if running:
-        t = running[-1]
-        task_id, task_type, desc, cur, total, text, created = t
-        st.markdown("### 🔄 正在进行的任务")
-        st.markdown(f"**{desc}**")
-        if total > 0:
-            st.progress(min(cur / total, 1.0), text=text or f"{cur}/{total}")
-        else:
-            st.info(text or "进行中...")
-        if st.button("🔄 刷新进度"):
-            st.rerun()
-
-    recent = get_recent_tasks(5)
-    done_tasks = [t for t in recent if t[3] == 'done']
-    if done_tasks:
-        st.markdown("### ✅ 最近完成的任务")
-        for t in done_tasks[:3]:
-            st.success(f"**{t[2]}** — {t[7] or '完成'} （{(t[9] or '')[:19]}）")
-
-    st.divider()
-
-    # 批量拉取邮件
-    st.markdown("### 📥 拉取邮件")
-    if accounts:
+        # 添加新账号
+        st.markdown("#### 添加邮箱账号")
         col1, col2 = st.columns(2)
         with col1:
-            sync_account = st.selectbox("选择账号", ["全部账号"] + [a[0] for a in accounts])
+            new_email = st.text_input("邮箱地址", placeholder="sales@meinuo.com")
+            new_password = st.text_input("密码/授权码", type="password")
         with col2:
-            sync_limit = st.number_input("每个文件夹拉取封数（0=全部）", min_value=0, value=500)
+            new_name = st.text_input("业务员姓名", placeholder="张三")
+            new_imap = st.text_input("IMAP服务器", value="imaphz.qiye.163.com")
 
-        if st.button("📥 开始拉取邮件", type="primary"):
-            limit = sync_limit if sync_limit > 0 else None
-            from modules.email_fetcher import fetch_all_emails, create_task, finish_task, fail_task
-
-            accs_to_sync = accounts if sync_account == "全部账号" else [next(a for a in accounts if a[0] == sync_account)]
-
-            for acc_email, acc_pwd, acc_imap, acc_name, _, _ in accs_to_sync:
-                task_id = create_task(f"拉取 {acc_email} ({acc_name}) 的邮件")
-                progress_bar = st.progress(0, text=f"正在连接 {acc_email}...")
-                status_text = st.empty()
-
-                try:
-                    # 连接并获取文件夹
-                    from modules.email_fetcher import connect_imap, list_folders, fetch_emails_from_folder, init_database
-                    conn = init_database()
-                    mail = connect_imap(acc_email, acc_pwd)
-                    folders = list_folders(mail)
-
-                    total_fetched = 0
-                    for fi, folder in enumerate(folders):
-                        pct = (fi) / len(folders)
-                        status_text.text(f"📂 正在处理文件夹 {fi+1}/{len(folders)}: {folder}")
-                        progress_bar.progress(pct, text=f"文件夹 {fi+1}/{len(folders)}: {folder}")
-
-                        def update_progress(cur, total, text):
-                            inner_pct = fi / len(folders) + (cur / total) / len(folders) if total > 0 else pct
-                            progress_bar.progress(min(inner_pct, 1.0), text=text)
-
-                        fetched, mail = fetch_emails_from_folder(
-                            mail, folder, acc_email, conn, limit,
-                            progress_callback=update_progress, task_id=task_id,
-                            password=acc_pwd
-                        )
-                        total_fetched += fetched
-
+        if st.button("➕ 添加账号", type="primary"):
+            if new_email and new_password:
+                with st.spinner("正在测试连接..."):
                     try:
+                        from modules.email_fetcher import connect_imap
+                        mail = connect_imap(new_email, new_password)
                         mail.logout()
-                    except Exception:
-                        pass
-                    conn.close()
-                    progress_bar.progress(1.0, text=f"✅ {acc_email} 完成！新增 {total_fetched} 封")
-                    status_text.empty()
-                    finish_task(task_id, f"新增 {total_fetched} 封邮件")
-                    st.success(f"✅ {acc_email} 拉取完成，新增 {total_fetched} 封邮件")
-
-                except Exception as e:
-                    fail_task(task_id, str(e))
-                    st.error(f"❌ {acc_email} 拉取失败: {e}")
-
-            # 重新解析
-            with st.spinner("正在解析邮件..."):
-                from modules.email_parser import process_all
-                process_all()
-            st.success("邮件解析完成！")
-
-    # 任务管理
-    st.divider()
-    st.subheader("📋 任务管理")
-    from modules.email_fetcher import get_recent_tasks as _get_recent, delete_old_tasks
-    all_tasks = _get_recent(30)
-    if all_tasks:
-        task_data = []
-        for t in all_tasks:
-            icon = {"done": "✅", "failed": "❌", "running": "🔄", "cancelled": "⏹️"}.get(t[3], "❓")
-            task_data.append({
-                "ID": t[0], "状态": f"{icon} {t[3]}", "类型": t[1],
-                "描述": t[2], "结果": (t[7] or "")[:60],
-                "创建时间": (t[8] or "")[:19], "完成时间": (t[9] or "")[:19]
-            })
-        st.dataframe(pd.DataFrame(task_data), use_container_width=True, height=300)
-        st.caption(f"共 {len(all_tasks)} 条记录")
-        if st.button("🗑️ 清理历史任务（保留最近20条）", key="clean_tasks_mgmt"):
-            deleted = delete_old_tasks(keep=20)
-            st.success(f"已清理 {deleted} 条历史任务")
-            st.rerun()
-    else:
-        st.info("暂无任务记录")
-
-    # AI 配置管理
-    st.divider()
-    st.subheader("🤖 AI 配置管理")
-    st.caption("配置 OpenRouter API，用于客户 AI 分析功能")
-
-    from modules.ai_analyzer import get_ai_config, test_api_key
-    from modules.email_fetcher import get_setting, save_setting
-
-    current_config = get_ai_config()
-
-    ai_col1, ai_col2 = st.columns(2)
-    with ai_col1:
-        new_api_key = st.text_input(
-            "OpenRouter API Key",
-            value=current_config['api_key'] or "",
-            type="password",
-            key="ai_api_key",
-            placeholder="sk-or-v1-..."
-        )
-        new_base_url = st.text_input(
-            "API Base URL",
-            value=current_config['base_url'],
-            key="ai_base_url"
-        )
-    with ai_col2:
-        model_options = [
-            "anthropic/claude-opus-4-6",
-            "anthropic/claude-sonnet-4-6",
-            "anthropic/claude-haiku-4-5-20251001",
-            "openai/gpt-4o",
-            "openai/gpt-4o-mini",
-            "google/gemini-2.5-pro-preview",
-        ]
-        current_model = current_config['model']
-        if current_model not in model_options:
-            model_options.insert(0, current_model)
-        new_model = st.selectbox(
-            "AI 模型",
-            model_options,
-            index=model_options.index(current_model),
-            key="ai_model_select"
-        )
-        new_max_tokens = st.number_input(
-            "每次分析最大 Token",
-            min_value=1000, max_value=100000,
-            value=current_config['max_tokens'],
-            step=1000,
-            key="ai_max_tokens"
-        )
-
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        if st.button("🔍 检测 Key 有效性", key="test_key"):
-            with st.spinner("正在检测..."):
-                ok, msg = test_api_key(api_key=new_api_key, base_url=new_base_url)
-            if ok:
-                st.success(f"🟢 {msg}")
-                # 刷新侧边栏缓存
-                st.session_state.pop('api_status_cache', None)
+                        add_email_account(new_email, new_password, new_name, new_imap)
+                        st.success(f"✅ {new_email} 添加成功！连接测试通过。")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"连接失败: {e}")
             else:
-                st.error(f"🔴 {msg}")
-    with btn_col2:
-        if st.button("💾 保存配置", type="primary", key="save_ai_config"):
-            save_setting('openrouter_api_key', new_api_key)
-            save_setting('openrouter_base_url', new_base_url)
-            save_setting('ai_model', new_model)
-            save_setting('max_tokens', str(new_max_tokens))
-            st.success("配置已保存！")
-            # 清除缓存让侧边栏重新检测
-            st.session_state.pop('api_status_cache', None)
-            st.rerun()
+                st.warning("请填写邮箱地址和密码")
 
-    # 数据库备份管理
-    st.divider()
-    st.subheader("💾 数据库备份管理")
-    from modules.db_backup import create_backup, restore_backup, list_backups
+        # 删除账号（需确认）
+        if accounts:
+            st.divider()
+            with st.expander("🗑️ 删除账号（危险操作）"):
+                del_email = st.selectbox("选择要删除的账号", [a[0] for a in accounts], key="del_acc")
+                confirm_email = st.text_input("输入邮箱地址确认删除", placeholder="请输入完整邮箱地址", key="del_confirm")
+                if st.button("确认删除", key="del_btn"):
+                    if confirm_email == del_email:
+                        remove_email_account(del_email)
+                        st.success(f"已删除 {del_email}")
+                        st.rerun()
+                    else:
+                        st.error("输入的邮箱地址不匹配")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("📸 立即创建备份", type="primary"):
-            with st.spinner("正在创建备份..."):
-                path = create_backup(reason="manual")
-            st.success(f"备份完成: {os.path.basename(path)}")
-            st.rerun()
+    # ====== Tab 2: 邮件同步 ======
+    with tab_sync:
+        if not accounts:
+            st.info("请先在「邮箱账号」标签页添加邮箱账号")
+        else:
+            # 运行中任务
+            running = get_running_tasks()
+            if running:
+                t = running[-1]
+                task_id_r, _, desc, cur, total, text, created = t
+                st.markdown("#### 🔄 正在同步")
+                elapsed = ""
+                try:
+                    from datetime import datetime as dt
+                    mins = int((dt.now() - dt.fromisoformat(created)).total_seconds() // 60)
+                    elapsed = f"（已运行 {mins} 分钟）"
+                except Exception:
+                    pass
+                st.markdown(f"**{desc}** {elapsed}")
+                if total > 0:
+                    st.progress(min(cur / total, 1.0), text=text or f"{cur}/{total}")
+                else:
+                    st.info(text or "进行中...")
+                rcol1, rcol2 = st.columns([1, 5])
+                with rcol1:
+                    if st.button("🔄 刷新", key="sync_refresh"):
+                        st.rerun()
+                with rcol2:
+                    if st.button("⏹️ 取消", key="sync_cancel"):
+                        cancel_task(task_id_r)
+                        st.warning("已取消")
+                        st.rerun()
+                st.divider()
 
-    # 显示备份列表
-    backups = list_backups()
-    if backups:
-        data = []
-        for name, path, size, mtime, location in backups:
-            data.append({
-                "文件名": name,
-                "大小": f"{size:.0f} MB",
-                "时间": mtime,
-                "位置": location,
-            })
-        st.dataframe(pd.DataFrame(data), use_container_width=True)
+            # 同步按钮
+            st.markdown("#### 邮件同步")
+            import subprocess as _sp
+            project_dir = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+            log_file = os.path.join(project_dir, 'data', 'worker.log')
 
-        # 恢复功能
-        with col2:
-            restore_options = {name: path for name, path, _, _, _ in backups}
-            selected = st.selectbox("选择要恢复的备份", list(restore_options.keys()), key="restore_select")
-            if st.button("⚠️ 恢复此备份", key="restore_btn"):
-                with st.spinner("正在恢复..."):
-                    count = restore_backup(restore_options[selected])
-                st.success(f"恢复完成！邮件数: {count}")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**🔄 全量同步**")
+                st.caption("扫描所有文件夹的所有邮件，自动跳过已下载的。首次使用或需要补全历史邮件时使用。")
+                if st.button("开始全量同步", type="primary", key="full_sync", disabled=bool(running)):
+                    cmd = [sys.executable, os.path.join(project_dir, 'run_full_download.py')]
+                    _sp.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=_sp.STDOUT, start_new_session=True)
+                    st.success("✅ 全量同步任务已启动！")
+                    time.sleep(1)
+                    st.rerun()
+
+            with col2:
+                st.markdown("**⚡ 增量同步**")
+                st.caption("只拉取上次同步之后的新邮件，速度快。日常使用推荐。")
+                if st.button("开始增量同步", type="primary", key="incr_sync", disabled=bool(running)):
+                    # 增量同步：只拉取每个文件夹最新的邮件（limit=500）
+                    from modules.email_fetcher import create_task, finish_task, fail_task
+                    cmd = [sys.executable, os.path.join(project_dir, 'run_incremental_sync.py')]
+                    _sp.Popen(cmd, cwd=project_dir, stdout=open(log_file, 'a'), stderr=_sp.STDOUT, start_new_session=True)
+                    st.success("✅ 增量同步任务已启动！")
+                    time.sleep(1)
+                    st.rerun()
+
+            if running:
+                st.caption("有任务在运行中，请等待完成后再提交")
+
+            # 同步统计
+            st.divider()
+            st.markdown("#### 📊 各账号邮件统计")
+            conn = get_db()
+            cursor = conn.cursor()
+            stat_data = []
+            for a in accounts:
+                acc_email = a[0]
+                cursor.execute("SELECT COUNT(*) FROM emails WHERE account = ?", (acc_email,))
+                cnt = cursor.fetchone()[0]
+                cursor.execute("SELECT MIN(date), MAX(date) FROM emails WHERE account = ?", (acc_email,))
+                dr = cursor.fetchone()
+                cursor.execute("SELECT COUNT(DISTINCT folder) FROM emails WHERE account = ?", (acc_email,))
+                folder_cnt = cursor.fetchone()[0]
+                stat_data.append({
+                    "账号": acc_email,
+                    "业务员": a[3] or "-",
+                    "本地邮件数": cnt,
+                    "文件夹数": folder_cnt,
+                    "最早邮件": format_date(dr[0]) if dr[0] else "-",
+                    "最晚邮件": format_date(dr[1]) if dr[1] else "-",
+                    "最后同步": (a[4] or "未同步")[:19],
+                })
+            conn.close()
+            st.dataframe(pd.DataFrame(stat_data), use_container_width=True, hide_index=True)
+            total_emails = sum(d["本地邮件数"] for d in stat_data)
+            st.caption(f"本地邮件总数: {total_emails:,}")
+
+    # ====== Tab 3: 任务管理 ======
+    with tab_task:
+        all_tasks = get_recent_tasks(30)
+        if all_tasks:
+            task_data = []
+            for t in all_tasks:
+                icon = {"done": "✅", "failed": "❌", "running": "🔄", "cancelled": "⏹️"}.get(t[3], "❓")
+                task_data.append({
+                    "ID": t[0], "状态": f"{icon} {t[3]}", "类型": t[1],
+                    "描述": t[2], "结果": (t[7] or "")[:80],
+                    "创建时间": (t[8] or "")[:19], "完成时间": (t[9] or "")[:19]
+                })
+            st.dataframe(pd.DataFrame(task_data), use_container_width=True, height=400)
+            st.caption(f"共 {len(all_tasks)} 条记录")
+            if st.button("🗑️ 清理历史任务（保留最近20条）", key="clean_tasks_mgmt"):
+                deleted = delete_old_tasks(keep=20)
+                st.success(f"已清理 {deleted} 条历史任务")
                 st.rerun()
-    else:
-        st.info("暂无备份，点击上方按钮创建第一份备份")
+        else:
+            st.info("暂无任务记录")
+
+    # ====== Tab 4: AI 配置 ======
+    with tab_ai:
+        st.caption("配置 OpenRouter API，用于客户 AI 分析功能")
+
+        from modules.ai_analyzer import get_ai_config, test_api_key
+        from modules.email_fetcher import get_setting, save_setting
+
+        current_config = get_ai_config()
+
+        ai_col1, ai_col2 = st.columns(2)
+        with ai_col1:
+            new_api_key = st.text_input(
+                "OpenRouter API Key", value=current_config['api_key'] or "",
+                type="password", key="ai_api_key", placeholder="sk-or-v1-..."
+            )
+            new_base_url = st.text_input("API Base URL", value=current_config['base_url'], key="ai_base_url")
+        with ai_col2:
+            model_options = [
+                "anthropic/claude-opus-4-6", "anthropic/claude-sonnet-4-6",
+                "anthropic/claude-haiku-4-5-20251001",
+                "openai/gpt-4o", "openai/gpt-4o-mini", "google/gemini-2.5-pro-preview",
+            ]
+            current_model = current_config['model']
+            if current_model not in model_options:
+                model_options.insert(0, current_model)
+            new_model = st.selectbox("AI 模型", model_options,
+                                     index=model_options.index(current_model), key="ai_model_select")
+            new_max_tokens = st.number_input("每次分析最大 Token",
+                                             min_value=1000, max_value=100000,
+                                             value=current_config['max_tokens'], step=1000, key="ai_max_tokens")
+
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            if st.button("🔍 检测 Key 有效性", key="test_key"):
+                with st.spinner("正在检测..."):
+                    ok, msg = test_api_key(api_key=new_api_key, base_url=new_base_url)
+                if ok:
+                    st.success(f"🟢 {msg}")
+                    st.session_state.pop('api_status_cache', None)
+                else:
+                    st.error(f"🔴 {msg}")
+        with btn_col2:
+            if st.button("💾 保存配置", type="primary", key="save_ai_config"):
+                save_setting('openrouter_api_key', new_api_key)
+                save_setting('openrouter_base_url', new_base_url)
+                save_setting('ai_model', new_model)
+                save_setting('max_tokens', str(new_max_tokens))
+                st.success("配置已保存！")
+                st.session_state.pop('api_status_cache', None)
+                st.rerun()
+
+    # ====== Tab 5: 数据库备份 ======
+    with tab_backup:
+        from modules.db_backup import create_backup, restore_backup, list_backups
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📸 立即创建备份", type="primary"):
+                with st.spinner("正在创建备份..."):
+                    path = create_backup(reason="manual")
+                st.success(f"备份完成: {os.path.basename(path)}")
+                st.rerun()
+
+        backups = list_backups()
+        if backups:
+            data = [{"文件名": name, "大小": f"{size:.0f} MB", "时间": mtime, "位置": loc}
+                    for name, path, size, mtime, loc in backups]
+            st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
+
+            with col2:
+                restore_options = {name: path for name, path, _, _, _ in backups}
+                selected_bk = st.selectbox("选择要恢复的备份", list(restore_options.keys()), key="restore_select")
+                if st.button("⚠️ 恢复此备份", key="restore_btn"):
+                    with st.spinner("正在恢复..."):
+                        count = restore_backup(restore_options[selected_bk])
+                    st.success(f"恢复完成！邮件数: {count}")
+                    st.rerun()
+        else:
+            st.info("暂无备份，点击上方按钮创建第一份备份")
 
 
 def show_all_emails():
