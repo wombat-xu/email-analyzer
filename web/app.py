@@ -1067,6 +1067,14 @@ def show_customer_detail():
         conn.close()
         return
 
+    # 缓存 key：避免同一客户重复加载时再显示 spinner
+    loaded_key = f"loaded_{email_addr}"
+    if loaded_key not in st.session_state:
+        _spinner = st.spinner(f"正在加载 {email_addr} 的客户数据...")
+        _spinner.__enter__()
+    else:
+        _spinner = None
+
     # === 数据来源说明（带缓存）===
     cursor.execute("SELECT COUNT(*) FROM emails WHERE from_addr LIKE ? OR to_addr LIKE ?",
                    (f"%{email_addr}%", f"%{email_addr}%"))
@@ -1143,6 +1151,11 @@ def show_customer_detail():
                         st.rerun()
     else:
         st.warning("本地数据库中没有该客户的邮件")
+
+    # 关闭 spinner
+    if _spinner:
+        _spinner.__exit__(None, None, None)
+        st.session_state[loaded_key] = True
 
     # === 分析/重新分析按钮 ===
     if not has_profile:
